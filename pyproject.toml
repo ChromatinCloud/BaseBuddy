@@ -1,0 +1,14 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "basebuddy"
+version = "0.1.0"
+requires-python = ">=3.10"
+
+[project.scripts]
+basebuddy = "basebuddy.cli:app"
+
+[tool.setuptools.packages.find]
+where = ["src"]

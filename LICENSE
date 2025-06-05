@@ -1,0 +1,14 @@
+
+**Explanation of what’s been added:**
+
+1. **`tests/test_runner.py`**  
+   - Uses `pytest` with fixtures to monkeypatch `shutil.which` and `subprocess.run`.  
+   - Verifies that each runner function builds the correct command arguments without actually invoking external binaries.  
+   - Includes a “realenv” marker for tests that require ART to be installed locally (they will be skipped otherwise).
+
+2. **`README.md`**  
+   - Detailed instructions for both local virtualenv and Docker usage.  
+   - Examples for each subcommand (`short`, `long`, `spike`, `signature`, `strand-bias`) with their flags.  
+   - Guidance on adding file sharing on macOS so Docker can mount host files.  
+   - Section on running the `pytest` suite and interpreting results.
+
