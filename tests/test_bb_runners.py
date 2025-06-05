@@ -1,339 +1,527 @@
 import pytest
 from pathlib import Path
 from unittest import mock
+import copy
+import shutil
 
-# Assuming bb_runners.py and bb_utils.py are accessible in PYTHONPATH
-# PYTHONPATH will be set to /app in the execution environment.
-import bb_runners
-import bb_utils # Used for exception types and potentially other utils if not mocked
+# Merged Imports from jules_wip and main (prioritizing jules_wip)
+from src.basebuddy import runner as src_bb_runner # For testing refactored runner
+import bb_runners # For testing original runners (kept from both)
+import bb_utils # Kept from both
+import xml.etree.ElementTree as ET
 
-# Default parameters for tests
+# Merged Default parameters for tests (prioritizing jules_wip where names conflicted)
 DEFAULT_ART_PATH = "dummy_art_illumina"
 DEFAULT_SAMTOOLS_PATH = "dummy_samtools"
-DEFAULT_REFERENCE_FASTA = "reference.fasta"
-DEFAULT_RUN_OUTPUT_DIR_NAME = "test_run_paired"
+DEFAULT_ADDSNV_PATH = "dummy_addsnv.py"
+DEFAULT_CURL_PATH = "dummy_curl"
+DEFAULT_REFERENCE_FASTA_FILENAME = "reference.fasta" # Using consistent name, content from both was "reference.fasta"
+DEFAULT_RUN_OUTPUT_DIR_NAME = "test_run" # From jules_wip
 
 @pytest.fixture
-def default_runner_params(tmp_path):
-    """Parameters that are direct arguments to simulate_short_reads_runner."""
-    output_root = tmp_path / "output_data"
-    ref_fasta = tmp_path / DEFAULT_REFERENCE_FASTA
+def default_src_simulate_params(tmp_path): # As per jules_wip intent
+    output_root = tmp_path / "output_data_simulate_src"
+    # Use DEFAULT_REFERENCE_FASTA_FILENAME for consistency
+    ref_fasta_path_str = str(tmp_path / DEFAULT_REFERENCE_FASTA_FILENAME)
+    Path(ref_fasta_path_str).parent.mkdir(parents=True, exist_ok=True)
+    # Create a dummy reference FASTA file with content
+    with open(ref_fasta_path_str, "w") as f:
+        f.write(">chr1\nACGTACGTACGTN\n")
+        f.write(">chr2\nNNNNNNNNNNNNNN\n")
+
+    current_run_name = DEFAULT_RUN_OUTPUT_DIR_NAME + "_src_simulate"
+
     return {
-        "output_root_dir": output_root, # Path object
-        "run_name": DEFAULT_RUN_OUTPUT_DIR_NAME,
-        "reference_fasta": str(ref_fasta), # String path
+        "output_root_dir": str(output_root),
+        "reference_fasta": ref_fasta_path_str,
         "depth": 50,
         "read_length": 150,
-        "art_profile": "HS25", # Example, ensure it's a valid ART seq system
+        "art_profile": "HS25",
+        "run_name": current_run_name,
         "mean_fragment_length": 400,
         "std_dev_fragment_length": 50,
         "is_paired_end": True,
         "overwrite_output": False,
         "art_platform": "illumina",
         "timeout": 3600.0,
-        # command_params will hold other settings for manifest and ART construction
-        "command_params": {
-            # These might be used by the runner to construct ART cmd or for manifest
-            "art_illumina_path": DEFAULT_ART_PATH, # For find_tool_path mock
-            "samtools_path": DEFAULT_SAMTOOLS_PATH, # For find_tool_path mock
-            # ART specific params not directly in runner signature but needed for cmd construction
-            # (The runner currently derives them or uses defaults, but good to have for flexibility)
-            "quality_shift": None,
-            "quality_shift2": None,
-            "random_seed": 12345,
-            "profile_type": "empirical",
-            "custom_profile_path1": None,
-            "custom_profile_path2": None,
-            "id_prefix": "sim_reads", # Used by runner for output naming
+        "auto_index_fasta": True,
+        "command_params": { # Reflecting structure with duplicated params
+            "art_exe_path_param": DEFAULT_ART_PATH,
+            "samtools_exe_path_param": DEFAULT_SAMTOOLS_PATH,
+            "id_prefix": "sim_reads_src",
             "no_aln_output": False,
-            "log_level": "INFO",
-            # Include original params for manifest that were direct args to runner
-            "reference_fasta": str(ref_fasta),
-            "depth": 50,
-            "read_length": 150,
-            "art_profile": "HS25",
-            "mean_fragment_length": 400,
-            "std_dev_fragment_length": 50,
-            "is_paired_end": True,
-            "art_platform": "illumina",
-            "output_root_dir": str(output_root), # Store as string for manifest
-            "run_name": DEFAULT_RUN_OUTPUT_DIR_NAME,
-            "overwrite_output": False,
+            "reference_fasta": ref_fasta_path_str, # Duplicated
+            "depth": 50, # Duplicated
+            "read_length": 150, # Duplicated
+            "art_profile": "HS25", # Duplicated
+            "mean_fragment_length": 400, # Duplicated
+            "std_dev_fragment_length": 50, # Duplicated
+            "is_paired_end": True, # Duplicated
+            "art_platform": "illumina", # Duplicated
+            "overwrite_output": False, # Duplicated
+            "auto_index_fasta": True, # Duplicated
+            "output_root_dir": str(output_root), # Duplicated
+            "run_name": current_run_name, # Duplicated
         }
     }
 
-class TestSimulateShortReadsRunner:
+class TestSrcSimulateShortRunner: # From jules_wip
+    def test_successful_paired_end_simulation(self, tmp_path, mocker, default_src_simulate_params):
+        run_params = default_src_simulate_params
+        # Convert output_root_dir to Path for internal test logic, though fixture provides string
+        run_params_output_root_dir_path = Path(run_params["output_root_dir"])
+        expected_run_output_dir = run_params_output_root_dir_path / run_params["run_name"]
+        
+        id_prefix = run_params["command_params"]["id_prefix"]
 
-    def test_successful_paired_end_simulation(self, tmp_path, mocker, default_runner_params):
-        # 1. Setup paths and expected outputs
-        # Use resolved paths from fixture where appropriate
-        output_run_dir = default_runner_params["output_root_dir"] / default_runner_params["run_name"]
-        id_prefix = default_runner_params["command_params"]["id_prefix"]
-        expected_fq1_path = output_run_dir / (id_prefix + "1.fq")
-        expected_fq2_path = output_run_dir / (id_prefix + "2.fq")
-        expected_aln_path = output_run_dir / (id_prefix + ".aln")
+        mock_find_tool = mocker.patch('bb_utils.find_tool_path', side_effect=lambda tool_name: run_params["command_params"]["art_exe_path_param"] if tool_name.startswith('art_') else run_params["command_params"]["samtools_exe_path_param"])
+        mock_ensure_file_exists_util = mocker.patch('bb_utils.ensure_file_exists', return_value=Path(run_params["reference_fasta"]))
+        mock_check_fasta_indexed_util = mocker.patch('bb_utils.check_fasta_indexed')
+        # mock_prepare_dir_util will be called by the runner to get the output directory path
+        mock_prepare_dir_util = mocker.patch('bb_utils.prepare_run_output_dir', return_value=expected_run_output_dir)
 
-        # Ensure the output directory that _prepare_run_output_directory is supposed to create, actually exists for the mock_art_cmd_effect
-        output_run_dir.mkdir(parents=True, exist_ok=True)
-
-        # 2. Mock external dependencies
-        # Patch find_tool_path where it's looked up (in bb_runners module)
-        mocker.patch('bb_runners.find_tool_path', side_effect=lambda tool_name:
-                     default_runner_params["command_params"]["art_illumina_path"] if tool_name.startswith('art_') else
-                     default_runner_params["command_params"]["samtools_path"] if tool_name == 'samtools' else None)
-
-        mock_ensure_file_exists = mocker.patch('bb_runners.ensure_file_exists', return_value=Path(default_runner_params["reference_fasta"])) # Target bb_runners
-        mock_check_fasta_indexed = mocker.patch('bb_runners.check_fasta_indexed') # Target bb_runners
-
-        # Mock _prepare_run_output_directory
-        mock_prepare_dir = mocker.patch('bb_runners._prepare_run_output_directory', return_value=output_run_dir)
-
-        # Mock run_external_cmd for ART
         def mock_art_cmd_effect(cmd_list, **kwargs):
-            # Based on ART's output naming: {id_prefix}[1/2].fq and {id_prefix}.aln
-            # Extract the output prefix from the -o argument
-            output_prefix_path_str = None
-            # The runner calculates output_prefix as: run_output_dir / f"simulated_{art_platform}_reads"
-            # It then passes this full path string to ART's -o argument.
-            # So, cmd_list will contain this full path.
-            for i, arg in enumerate(cmd_list):
-                if arg == "-o" and i + 1 < len(cmd_list):
-                    output_prefix_path_str = cmd_list[i+1] # This is output_run_dir / id_prefix
-                    break
+            output_prefix_path_str = next(cmd_list[i+1] for i, arg in enumerate(cmd_list) if arg == "-o")
+            prefix_path = Path(output_prefix_path_str)
+            assert prefix_path == expected_run_output_dir / id_prefix
+            (prefix_path.parent / (prefix_path.name + "1.fq")).touch()
+            if run_params["is_paired_end"]: (prefix_path.parent / (prefix_path.name + "2.fq")).touch()
+            if not run_params["command_params"]["no_aln_output"]: (prefix_path.parent / (prefix_path.name + ".aln")).touch()
+            return (0, "ART success", "")
+        mock_run_external_cmd_util = mocker.patch('bb_utils.run_external_cmd', side_effect=mock_art_cmd_effect)
+        mock_write_manifest_util = mocker.patch('bb_utils.write_run_manifest')
 
-            if output_prefix_path_str:
-                prefix_path = Path(output_prefix_path_str) # e.g., .../output_data/test_run_paired/sim_reads
-                # Create dummy FASTQ files based on the prefix name
-                (prefix_path.parent / (prefix_path.name + "1.fq")).touch()
-                if default_runner_params["is_paired_end"]: # Check original params
-                     (prefix_path.parent / (prefix_path.name + "2.fq")).touch()
+        src_bb_runner.simulate_short(**run_params)
 
-                # Create dummy ALN file if not no_aln_output (from command_params)
-                if not default_runner_params["command_params"]["no_aln_output"]:
-                    (prefix_path.parent / (prefix_path.name + ".aln")).touch()
-                return (0, "ART simulation successful", "")
-            raise ValueError(f"ART command mock did not find -o argument correctly in {cmd_list}")
+        mock_prepare_dir_util.assert_called_once_with(run_params_output_root_dir_path, run_params["run_name"], run_params["overwrite_output"])
+        mock_find_tool.assert_any_call(f"art_{run_params['art_platform']}")
+        mock_find_tool.assert_any_call("samtools")
+        mock_ensure_file_exists_util.assert_any_call(run_params["reference_fasta"], "Reference FASTA")
+        mock_check_fasta_indexed_util.assert_called_once_with(Path(run_params["reference_fasta"]), run_params["command_params"]["samtools_exe_path_param"], auto_index_if_missing=run_params["auto_index_fasta"])
 
-        mock_run_art_cmd = mocker.patch('bb_runners.run_external_cmd', side_effect=mock_art_cmd_effect) # Target bb_runners
-        mock_write_manifest = mocker.patch('bb_runners.write_run_manifest') # Target bb_runners
+        mock_run_external_cmd_util.assert_called_once()
+        art_call_args = mock_run_external_cmd_util.call_args[0][0]
+        assert str(expected_run_output_dir / id_prefix) in art_call_args
 
-        # Create dummy reference fasta
-        Path(default_runner_params["reference_fasta"]).parent.mkdir(parents=True, exist_ok=True)
-        Path(default_runner_params["reference_fasta"]).touch()
+        expected_fq1 = expected_run_output_dir / (id_prefix + "1.fq")
+        expected_fq2 = expected_run_output_dir / (id_prefix + "2.fq")
+        mock_ensure_file_exists_util.assert_any_call(expected_fq1, "Expected ART output R1 FASTQ")
+        mock_ensure_file_exists_util.assert_any_call(expected_fq2, "Expected ART output R2 FASTQ")
 
-        # 3. Run the function - pass only known direct arguments
-        runner_args_to_pass = {
-            k: v for k, v in default_runner_params.items()
-            if k in bb_runners.simulate_short_reads_runner.__code__.co_varnames
-        }
-        bb_runners.simulate_short_reads_runner(**runner_args_to_pass)
+        mock_write_manifest_util.assert_called_once()
+        manifest_call_args = mock_write_manifest_util.call_args # Corrected variable name from manifest_kall
+        assert manifest_call_args.kwargs['run_name'] == run_params["run_name"]
+        assert manifest_call_args.kwargs['command_name'] == f"simulate_short_reads_{run_params['art_platform']}"
+        assert manifest_call_args.kwargs['reference_genome_path'] == run_params["reference_fasta"]
+        assert manifest_call_args.kwargs['parameters']["id_prefix"] == id_prefix
 
+    def test_successful_single_end_simulation(self, tmp_path, mocker, default_src_simulate_params):
+        run_params = copy.deepcopy(default_src_simulate_params)
+        run_params["is_paired_end"] = False
+        if "command_params" in run_params: # Keep command_params consistent if used by runner
+             run_params["command_params"]["is_paired_end"] = False
 
-        # 4. Assertions
-        # find_tool_path is already mocked via bb_runners.find_tool_path
-        # No direct assertion on bb_utils.find_tool_path needed if already covered by the mock effect.
-        # We can assert on the mock object if needed, e.g. mock_find_tool_path.assert_any_call(...)
-        # For now, the side_effect implicitly tests it's called.
+        run_params_output_root_dir_path = Path(run_params["output_root_dir"])
+        expected_run_output_dir = run_params_output_root_dir_path / run_params["run_name"]
+        id_prefix = run_params["command_params"]["id_prefix"]
+        expected_fq_path = expected_run_output_dir / (id_prefix + ".fq")
 
-        # Check calls to ensure_file_exists
-        # The runner calls ensure_file_exists(reference_fasta, "Reference FASTA")
-        # where "Reference FASTA" is a positional argument for entity_name.
-        mock_ensure_file_exists.assert_any_call(default_runner_params["reference_fasta"], "Reference FASTA")
-
-        art_output_filename_prefix = f"simulated_{default_runner_params['art_platform']}_reads"
-        # For these calls, entity_name is also passed positionally by the runner.
-        mock_ensure_file_exists.assert_any_call(output_run_dir / (art_output_filename_prefix + "1.fq"), "Expected ART output R1 FASTQ")
-        if default_runner_params["is_paired_end"]:
-            mock_ensure_file_exists.assert_any_call(output_run_dir / (art_output_filename_prefix + "2.fq"), "Expected ART output R2 FASTQ")
-
-        mock_check_fasta_indexed.assert_called_once_with(
-            Path(default_runner_params["reference_fasta"]), # First positional argument
-            default_runner_params["command_params"]["samtools_path"]  # Second positional argument
-            # auto_index_if_missing uses its default value (False) in the runner's call
-        )
-        mock_prepare_dir.assert_called_once_with(
-            default_runner_params["output_root_dir"],
-            default_runner_params["run_name"],
-            default_runner_params["overwrite_output"] # Passed positionally
-        )
-
-        assert mock_run_art_cmd.call_count == 1
-        art_call_args_list = mock_run_art_cmd.call_args[0][0]
-        assert default_runner_params["command_params"]["art_illumina_path"] in art_call_args_list
-        assert "-l" in art_call_args_list and str(default_runner_params["read_length"]) in art_call_args_list
-        assert "-f" in art_call_args_list and str(default_runner_params["depth"]) in art_call_args_list # ART uses -f for depth/coverage
-        assert "-m" in art_call_args_list and str(default_runner_params["mean_fragment_length"]) in art_call_args_list
-        assert "-s" in art_call_args_list and str(default_runner_params["std_dev_fragment_length"]) in art_call_args_list
-        if default_runner_params["is_paired_end"]:
-            assert "-p" in art_call_args_list
-
-        # The output prefix for ART is `run_output_dir / f"simulated_{art_platform}_reads"`
-        # The runner uses id_prefix from command_params for the manifest, but a fixed "simulated_{art_platform}_reads" for ART output files
-        art_output_filename_prefix = f"simulated_{default_runner_params['art_platform']}_reads"
-        assert "-o" in art_call_args_list and str(output_run_dir / art_output_filename_prefix) in art_call_args_list
-
-        # ensure_file_exists calls are checked above with assert_has_calls
-
-        mock_write_manifest.assert_called_once()
-        manifest_call_args = mock_write_manifest.call_args
-
-        assert manifest_call_args[0][0] == output_run_dir / "manifest.json" # manifest_path
-        assert manifest_call_args[0][1] == default_runner_params["run_name"] # run_name
-        assert manifest_call_args[0][2] == "short" # command_name in manifest (hardcoded in runner)
-
-        manifest_params_written = manifest_call_args[0][3] # parameters
-        assert manifest_params_written["reference_fasta"] == default_runner_params["reference_fasta"]
-        assert manifest_params_written["read_length"] == default_runner_params["read_length"]
-        assert manifest_params_written["is_paired_end"] == default_runner_params["is_paired_end"]
-
-        manifest_outputs_written = manifest_call_args[0][4] # output_files
-
-        # Expected paths for manifest are relative to output_run_dir, not output_run_dir.parent
-        # And filenames are based on "simulated_{art_platform}_reads"
-        expected_manifest_fq1 = {"name": "Simulated Reads (R1)", "path": art_output_filename_prefix + "1.fq", "type": "FASTQ"}
-        assert any(o == expected_manifest_fq1 for o in manifest_outputs_written)
-        if default_runner_params["is_paired_end"]:
-            expected_manifest_fq2 = {"name": "Simulated Reads (R2)", "path": art_output_filename_prefix + "2.fq", "type": "FASTQ"}
-            assert any(o == expected_manifest_fq2 for o in manifest_outputs_written)
-        if not default_runner_params["command_params"]["no_aln_output"]:
-            expected_manifest_aln = {"name": "ART Alignment ALN", "path": art_output_filename_prefix + ".aln", "type": "ALN"}
-            assert any(o == expected_manifest_aln for o in manifest_outputs_written)
-        else:
-            # Ensure ALN is not in manifest if no_aln_output is True
-            assert not any(o["type"] == "ALN" for o in manifest_outputs_written)
-
-        # reference_genome_path is passed as a keyword argument
-        assert manifest_call_args[1]['reference_genome_path'] == str(Path(default_runner_params["reference_fasta"]))
-        # status is not explicitly passed by the runner, so it takes its default value in write_run_manifest.
-        # Thus, it won't appear in call_args[1] (kwargs). We don't assert it here.
-
-    # Placeholder for other tests
-    def test_successful_single_end_simulation(self, tmp_path, mocker, default_runner_params):
-        single_end_params = default_runner_params.copy()
-        single_end_params["is_paired_end"] = False
-        # Update command_params as well if it's used to derive is_paired_end for manifest or other logic
-        single_end_params["command_params"] = default_runner_params["command_params"].copy()
-        single_end_params["command_params"]["is_paired_end"] = False
-
-        output_run_dir = single_end_params["output_root_dir"] / single_end_params["run_name"]
-        # id_prefix = single_end_params["command_params"]["id_prefix"] # Not used for ART output file names
-        art_output_filename_prefix = f"simulated_{single_end_params['art_platform']}_reads"
-        expected_fq_path = output_run_dir / (art_output_filename_prefix + ".fq") # Single end uses .fq
-
-        output_run_dir.mkdir(parents=True, exist_ok=True)
-
-        mocker.patch('bb_runners.find_tool_path', side_effect=lambda tool_name:
-                     single_end_params["command_params"]["art_illumina_path"] if tool_name.startswith('art_') else
-                     single_end_params["command_params"]["samtools_path"] if tool_name == 'samtools' else None)
-
-        mock_ensure_file_exists = mocker.patch('bb_runners.ensure_file_exists', return_value=Path(single_end_params["reference_fasta"]))
-        mocker.patch('bb_runners.check_fasta_indexed')
-        mocker.patch('bb_runners._prepare_run_output_directory', return_value=output_run_dir)
+        mocker.patch('bb_utils.find_tool_path', side_effect=lambda tool_name: run_params["command_params"]["art_exe_path_param"] if tool_name.startswith('art_') else run_params["command_params"]["samtools_exe_path_param"])
+        mock_ensure_file_exists_util = mocker.patch('bb_utils.ensure_file_exists', return_value=Path(run_params["reference_fasta"]))
+        mocker.patch('bb_utils.check_fasta_indexed')
+        mocker.patch('bb_utils.prepare_run_output_dir', return_value=expected_run_output_dir)
 
         def mock_art_cmd_effect_single(cmd_list, **kwargs):
-            output_prefix_path_str = None
-            for i, arg in enumerate(cmd_list):
-                if arg == "-o" and i + 1 < len(cmd_list):
-                    output_prefix_path_str = cmd_list[i+1]
-                    break
-            if output_prefix_path_str:
-                prefix_path = Path(output_prefix_path_str)
-                (prefix_path.parent / (prefix_path.name + ".fq")).touch() # Single-end .fq
-                if not single_end_params["command_params"]["no_aln_output"]:
-                    (prefix_path.parent / (prefix_path.name + ".aln")).touch()
-                return (0, "ART SE simulation successful", "")
-            raise ValueError("ART SE command mock did not find -o argument correctly")
+            output_prefix_path_str = next(cmd_list[i+1] for i, arg in enumerate(cmd_list) if arg == "-o")
+            prefix_path = Path(output_prefix_path_str)
+            (prefix_path.parent / (prefix_path.name + ".fq")).touch() # Single-end
+            if not run_params["command_params"]["no_aln_output"]: (prefix_path.parent / (prefix_path.name + ".aln")).touch()
+            return (0, "ART SE success", "")
+        mock_run_external_cmd_util = mocker.patch('bb_utils.run_external_cmd', side_effect=mock_art_cmd_effect_single)
+        mock_write_manifest_util = mocker.patch('bb_utils.write_run_manifest')
 
-        mock_run_art_cmd = mocker.patch('bb_runners.run_external_cmd', side_effect=mock_art_cmd_effect_single)
-        mock_write_manifest = mocker.patch('bb_runners.write_run_manifest')
+        src_bb_runner.simulate_short(**run_params)
 
-        Path(single_end_params["reference_fasta"]).touch() # Ensure dummy fasta exists
-
-        runner_args_to_pass = {
-            k: v for k, v in single_end_params.items()
-            if k in bb_runners.simulate_short_reads_runner.__code__.co_varnames
-        }
-        bb_runners.simulate_short_reads_runner(**runner_args_to_pass)
-
-        art_call_args_list = mock_run_art_cmd.call_args[0][0]
-        assert "-p" not in art_call_args_list # Should not have paired-end flag
-        mock_ensure_file_exists.assert_any_call(expected_fq_path, "Expected ART output FASTQ")
-
-        manifest_call_args = mock_write_manifest.call_args
-        manifest_params_written = manifest_call_args[0][3]
+        art_call_args_list = mock_run_external_cmd_util.call_args[0][0]
+        assert "-p" not in art_call_args_list
+        mock_ensure_file_exists_util.assert_any_call(expected_fq_path, "Expected ART output FASTQ")
+        manifest_params_written = mock_write_manifest_util.call_args.kwargs['parameters']
         assert manifest_params_written["is_paired_end"] == False
 
-        manifest_outputs_written = manifest_call_args[0][4]
-        expected_manifest_fq = {"name": "Simulated Reads", "path": art_output_filename_prefix + ".fq", "type": "FASTQ"}
-        assert any(o == expected_manifest_fq for o in manifest_outputs_written)
-        assert not any("R1" in o["name"] or "R2" in o["name"] for o in manifest_outputs_written if o["type"] == "FASTQ")
+    def test_art_tool_failure(self, tmp_path, mocker, default_src_simulate_params):
+        run_params = default_src_simulate_params
+        run_params_output_root_dir_path = Path(run_params["output_root_dir"])
+        expected_run_output_dir = run_params_output_root_dir_path / run_params["run_name"]
 
+        mocker.patch('bb_utils.find_tool_path', side_effect=lambda tool_name: run_params["command_params"]["art_exe_path_param"] if tool_name.startswith('art_') else run_params["command_params"]["samtools_exe_path_param"])
+        mocker.patch('bb_utils.ensure_file_exists', return_value=Path(run_params["reference_fasta"]))
+        mocker.patch('bb_utils.check_fasta_indexed')
+        mocker.patch('bb_utils.prepare_run_output_dir', return_value=expected_run_output_dir)
+        mock_run_external_cmd_util = mocker.patch('bb_utils.run_external_cmd', side_effect=bb_utils.BaseBuddyToolError("ART sim failed", command=["art_exe"]))
+        mock_write_manifest_util = mocker.patch('bb_utils.write_run_manifest')
 
-    def test_art_tool_failure(self, tmp_path, mocker, default_runner_params):
-        output_run_dir = default_runner_params["output_root_dir"] / default_runner_params["run_name"]
-        output_run_dir.mkdir(parents=True, exist_ok=True)
+        with pytest.raises(bb_utils.BaseBuddyToolError, match="ART sim failed"):
+            src_bb_runner.simulate_short(**run_params)
+        mock_run_external_cmd_util.assert_called_once()
+        mock_write_manifest_util.assert_not_called()
 
-        mocker.patch('bb_runners.find_tool_path', side_effect=lambda tool_name:
-                     default_runner_params["command_params"]["art_illumina_path"] if tool_name.startswith('art_') else
-                     default_runner_params["command_params"]["samtools_path"] if tool_name == 'samtools' else None)
+    def test_missing_art_tool(self, tmp_path, mocker, default_src_simulate_params):
+        run_params = default_src_simulate_params
+        def find_tool_effect(tool_name):
+            if tool_name.startswith('art_'): raise bb_utils.BaseBuddyConfigError("ART not found")
+            return run_params["command_params"]["samtools_exe_path_param"]
+        mocker.patch('bb_utils.find_tool_path', side_effect=find_tool_effect)
+        mocker.patch('bb_utils.prepare_run_output_dir', return_value=Path(run_params["output_root_dir"]) / run_params["run_name"])
+        mocker.patch('bb_utils.ensure_file_exists')
+        mocker.patch('bb_utils.check_fasta_indexed')
+        # run_external_cmd mock is not needed if find_tool_path fails before it
 
-        mocker.patch('bb_runners.ensure_file_exists', return_value=Path(default_runner_params["reference_fasta"]))
-        mocker.patch('bb_runners.check_fasta_indexed')
-        mocker.patch('bb_runners._prepare_run_output_directory', return_value=output_run_dir)
+        with pytest.raises(bb_utils.BaseBuddyConfigError, match="ART not found"):
+            src_bb_runner.simulate_short(**run_params)
 
-        # Mock run_external_cmd for ART to raise BaseBuddyToolError
-        art_command_str_part = default_runner_params["command_params"]["art_illumina_path"] # ART exe path
-        mock_run_art_cmd = mocker.patch('bb_runners.run_external_cmd',
-                                        side_effect=bb_utils.BaseBuddyToolError(
-                                            message="ART simulation failed",
-                                            command=[art_command_str_part, "-ss", "..."] # Dummy command list
-                                        ))
+    def test_invalid_input_depth(self, tmp_path, default_src_simulate_params):
+        run_params = copy.deepcopy(default_src_simulate_params)
+        run_params["depth"] = 0
+        if "command_params" in run_params and "depth" in run_params["command_params"]: # if depth is also in command_params
+             run_params["command_params"]["depth"] = 0
 
-        # write_run_manifest should not be called if ART fails before manifest generation
+        with pytest.raises(bb_utils.BaseBuddyInputError, match="Sequencing depth must be a positive integer"):
+            src_bb_runner.simulate_short(**run_params)
+
+@pytest.fixture
+def default_spike_params(tmp_path): # This fixture remains for the old TestSpikeVariantsRunner (from jules_wip)
+    output_root = tmp_path / "output_data_spike"
+    ref_fasta_path = tmp_path / "ref_spike.fasta"; ref_fasta_path.touch()
+    input_bam_path = tmp_path / "input.bam"; input_bam_path.touch(); (tmp_path / "input.bam.bai").touch()
+    vcf_file_path = tmp_path / "variants.vcf"; vcf_file_path.touch()
+    run_name = DEFAULT_RUN_OUTPUT_DIR_NAME + "_spike"
+    return {
+        "output_root_dir": str(output_root),
+        "run_name": run_name,
+        "reference_fasta": str(ref_fasta_path),
+        "input_bam": str(input_bam_path),
+        "vcf_file": str(vcf_file_path),
+        "output_bam_prefix_rel": "spiked_output",
+        "overwrite_output": False,
+        "auto_index_input_bam": False,
+        "timeout": 7200.0, # Top-level timeout
+        "command_params": { # Specific paths for tools
+            "addsnv_path": DEFAULT_ADDSNV_PATH,
+            "samtools_path": DEFAULT_SAMTOOLS_PATH,
+        }
+    }
+
+class TestSpikeVariantsRunner: # This tests the root bb_runners.py version (from jules_wip)
+    def test_successful_spike(self, tmp_path, mocker, default_spike_params):
+        run_params = default_spike_params
+        run_params_output_root_dir_path = Path(run_params["output_root_dir"]) # Convert to Path for consistency
+        run_output_dir = run_params_output_root_dir_path / run_params["run_name"]
+        final_bam_path = run_output_dir / (run_params["output_bam_prefix_rel"] + ".bam")
+        temp_bam_path = run_output_dir / (run_params["output_bam_prefix_rel"] + "_temp_addsnv.bam")
+
+        mocker.patch('bb_runners.find_tool_path', side_effect=lambda tool: default_spike_params["command_params"]["addsnv_path"] if tool == "addsnv.py" else default_spike_params["command_params"]["samtools_path"])
+        mock_ensure_exists = mocker.patch('bb_runners.ensure_file_exists', side_effect=lambda fp_arg, entity_name_arg="Input file": Path(fp_arg))
+        mock_check_fasta_idx = mocker.patch('bb_runners.check_fasta_indexed')
+        mock_check_bam_idx = mocker.patch('bb_runners.check_bam_indexed')
+        mocker.patch('bb_runners._prepare_run_output_directory', return_value=run_output_dir)
+        mock_unlink = mocker.patch.object(Path, 'unlink', return_value=None)
+        mock_write_manifest = mocker.patch('bb_runners.write_run_manifest')
+        mock_gen_igv = mocker.patch('bb_runners.generate_igv_session_xml')
+
+        def run_cmd_effect(cmd_list, **kwargs):
+            if default_spike_params["command_params"]["addsnv_path"] in cmd_list: temp_bam_path.touch()
+            elif "sort" in cmd_list: final_bam_path.touch()
+            return (0, "cmd success", "")
+        mock_run_cmd = mocker.patch('bb_runners.run_external_cmd', side_effect=run_cmd_effect)
+
+        runner_arg_names = bb_runners.spike_variants_runner.__code__.co_varnames
+        runner_args_to_pass = {k: v for k, v in run_params.items() if k in runner_arg_names}
+        if "command_params" in runner_arg_names and "command_params" not in runner_args_to_pass :
+             runner_args_to_pass["command_params"] = run_params.get("command_params", {})
+
+        bb_runners.spike_variants_runner(**runner_args_to_pass)
+
+        expected_ensure_calls = [
+            mocker.call(run_params["reference_fasta"], "Reference FASTA"),
+            mocker.call(run_params["input_bam"], "Input BAM"),
+            mocker.call(run_params["vcf_file"], "Input VCF"),
+            mocker.call(str(temp_bam_path), "Temporary output BAM from addsnv.py"),
+            mocker.call(str(final_bam_path), "Final output BAM from variant spiking"),
+        ]
+        mock_ensure_exists.assert_has_calls(expected_ensure_calls, any_order=True) # any_order for flexibility
+        mock_check_fasta_idx.assert_called_once_with(Path(run_params["reference_fasta"]), default_spike_params["command_params"]["samtools_path"])
+        mock_check_bam_idx.assert_any_call(Path(run_params["input_bam"]), default_spike_params["command_params"]["samtools_path"], auto_index_if_missing=run_params["auto_index_input_bam"])
+        mock_check_bam_idx.assert_any_call(final_bam_path, default_spike_params["command_params"]["samtools_path"], auto_index_if_missing=True)
+        assert mock_run_cmd.call_count == 2
+        mock_unlink.assert_called_once_with()
+        mock_write_manifest.assert_called_once()
+        mock_gen_igv.assert_called_once()
+
+    def test_addsnv_tool_failure(self, tmp_path, mocker, default_spike_params):
+        run_params = default_spike_params
+        run_params_output_root_dir_path = Path(run_params["output_root_dir"])
+        run_output_dir = run_params_output_root_dir_path / run_params["run_name"]
+        
+        mocker.patch('bb_runners.find_tool_path', side_effect=lambda tool: default_spike_params["command_params"]["addsnv_path"] if tool == "addsnv.py" else default_spike_params["command_params"]["samtools_path"])
+        mocker.patch('bb_runners.ensure_file_exists', side_effect=lambda fp_arg, entity_name_arg="Input file": Path(fp_arg))
+        mocker.patch('bb_runners.check_fasta_indexed'); mocker.patch('bb_runners.check_bam_indexed')
+        mocker.patch('bb_runners._prepare_run_output_directory', return_value=run_output_dir)
+        def failing_run_cmd_effect(cmd_list, **kwargs):
+            if default_spike_params["command_params"]["addsnv_path"] in cmd_list: raise bb_utils.BaseBuddyToolError("addsnv.py failed", command=cmd_list)
+            return (0, "", "") # Should not be reached for addsnv call
+        mock_run_cmd = mocker.patch('bb_runners.run_external_cmd', side_effect=failing_run_cmd_effect)
+        mock_write_manifest = mocker.patch('bb_runners.write_run_manifest')
+        
+        runner_arg_names = bb_runners.spike_variants_runner.__code__.co_varnames
+        runner_args_to_pass = {k: v for k, v in run_params.items() if k in runner_arg_names}
+        if "command_params" in runner_arg_names and "command_params" not in runner_args_to_pass :
+             runner_args_to_pass["command_params"] = run_params.get("command_params", {})
+
+        with pytest.raises(bb_utils.BaseBuddyToolError, match="addsnv.py failed"):
+            bb_runners.spike_variants_runner(**runner_args_to_pass)
+        mock_run_cmd.assert_called_once()
+        mock_write_manifest.assert_not_called()
+
+    def test_samtools_sort_failure(self, tmp_path, mocker, default_spike_params):
+        run_params = default_spike_params
+        run_params_output_root_dir_path = Path(run_params["output_root_dir"])
+        run_output_dir = run_params_output_root_dir_path / run_params["run_name"]
+        temp_bam_path = run_output_dir / (run_params["output_bam_prefix_rel"] + "_temp_addsnv.bam")
+
+        mocker.patch('bb_runners.find_tool_path', side_effect=lambda tool: default_spike_params["command_params"]["addsnv_path"] if tool == "addsnv.py" else default_spike_params["command_params"]["samtools_path"])
+        mocker.patch('bb_runners.ensure_file_exists', side_effect=lambda fp_arg, entity_name_arg="Input file": Path(fp_arg))
+        mocker.patch('bb_runners.check_fasta_indexed'); mocker.patch('bb_runners.check_bam_indexed')
+        mocker.patch('bb_runners._prepare_run_output_directory', return_value=run_output_dir)
+        mock_unlink = mocker.patch.object(Path, 'unlink', return_value=None)
+        def run_cmd_effect(cmd_list, **kwargs):
+            if default_spike_params["command_params"]["addsnv_path"] in cmd_list: temp_bam_path.touch(); return (0, "addsnv success", "")
+            elif "sort" in cmd_list: raise bb_utils.BaseBuddyToolError("samtools sort failed", command=["samtools", "sort"])
+            return (1, "unexpected cmd", "error") # Fallback
+        mock_run_cmd = mocker.patch('bb_runners.run_external_cmd', side_effect=run_cmd_effect)
         mock_write_manifest = mocker.patch('bb_runners.write_run_manifest')
 
-        Path(default_runner_params["reference_fasta"]).touch()
+        runner_arg_names = bb_runners.spike_variants_runner.__code__.co_varnames
+        runner_args_to_pass = {k: v for k, v in run_params.items() if k in runner_arg_names}
+        if "command_params" in runner_arg_names and "command_params" not in runner_args_to_pass :
+             runner_args_to_pass["command_params"] = run_params.get("command_params", {})
 
-        runner_args_to_pass = {
-            k: v for k, v in default_runner_params.items()
-            if k in bb_runners.simulate_short_reads_runner.__code__.co_varnames
+        with pytest.raises(bb_utils.BaseBuddyToolError, match="samtools sort failed"):
+            bb_runners.spike_variants_runner(**runner_args_to_pass)
+        assert mock_run_cmd.call_count == 2
+        mock_unlink.assert_not_called() # Temp file should not be unlinked if sort fails
+        mock_write_manifest.assert_not_called()
+
+    def test_missing_addsnv_tool(self, tmp_path, mocker, default_spike_params):
+        run_params = default_spike_params
+        def find_tool_effect(tool_name):
+            if tool_name == "addsnv.py": raise bb_utils.BaseBuddyConfigError("addsnv.py not found")
+            elif tool_name == "samtools": return default_spike_params["command_params"]["samtools_path"]
+            return None 
+        mocker.patch('bb_runners.find_tool_path', side_effect=find_tool_effect)
+        mocker.patch('bb_runners._prepare_run_output_directory', return_value=Path(run_params["output_root_dir"]) / run_params["run_name"])
+        mocker.patch('bb_runners.ensure_file_exists')
+        mocker.patch('bb_runners.check_fasta_indexed')
+        mocker.patch('bb_runners.check_bam_indexed')
+        # run_external_cmd mock not needed if find_tool_path fails early
+
+        runner_arg_names = bb_runners.spike_variants_runner.__code__.co_varnames
+        runner_args_to_pass = {k: v for k, v in run_params.items() if k in runner_arg_names}
+        if "command_params" in runner_arg_names and "command_params" not in runner_args_to_pass :
+             runner_args_to_pass["command_params"] = run_params.get("command_params", {})
+             
+        with pytest.raises(bb_utils.BaseBuddyConfigError, match="addsnv.py not found"):
+            bb_runners.spike_variants_runner(**runner_args_to_pass)
+
+@pytest.fixture
+def default_download_params(tmp_path): # From jules_wip
+    output_root = tmp_path / "output_data_download"
+    run_name = DEFAULT_RUN_OUTPUT_DIR_NAME + "_download"
+    return {
+        "output_root_dir": str(output_root),
+        "run_name": run_name,
+        "download_url": "http://example.com/dummy.fasta.gz",
+        "destination_filename": "dummy.fasta.gz",
+        "expected_checksum": "abc123checksum",
+        "checksum_algorithm": "sha256",
+        "timeout_download": 10800.0,
+        "overwrite_output": False,
+        "command_params": {
+            "curl_path": DEFAULT_CURL_PATH,
+            "samtools_path": DEFAULT_SAMTOOLS_PATH,
         }
+    }
 
-        with pytest.raises(bb_utils.BaseBuddyToolError) as excinfo:
-            bb_runners.simulate_short_reads_runner(**runner_args_to_pass)
+class TestDownloadReferenceRunner: # This tests the root bb_runners.py version (from jules_wip)
+    def test_successful_download_and_index_fasta(self, tmp_path, mocker, default_download_params):
+        run_params = copy.deepcopy(default_download_params)
+        run_params["destination_filename"] = "dummy.fa" # Make it a .fa for indexing
 
-        assert "ART simulation failed" in str(excinfo.value)
-        mock_run_art_cmd.assert_called_once() # Ensure ART was attempted
-        mock_write_manifest.assert_not_called() # Manifest should not be written on tool failure
+        run_params_output_root_dir_path = Path(run_params["output_root_dir"])
+        run_output_dir = run_params_output_root_dir_path / run_params["run_name"]
+        downloaded_file_path = run_output_dir / run_params["destination_filename"]
+        fai_file_path = downloaded_file_path.with_suffix(downloaded_file_path.suffix + ".fai")
+
+        mocker.patch('bb_runners.find_tool_path', side_effect=lambda tool: run_params["command_params"]["curl_path"] if tool == "curl" else run_params["command_params"]["samtools_path"])
+        mocker.patch('bb_runners._prepare_run_output_directory', return_value=run_output_dir)
+        mock_verify_checksum = mocker.patch('bb_runners.verify_file_checksum')
+        mock_write_manifest = mocker.patch('bb_runners.write_run_manifest')
+        mocker.patch('bb_runners.ensure_file_exists', side_effect=lambda fp_arg, entity_name_arg="Input file": Path(fp_arg))
+        mock_check_fasta_indexed_in_bb_runners = mocker.patch('bb_runners.check_fasta_indexed')
+
+        def run_cmd_effect(cmd_list, **kwargs):
+            if cmd_list[0] == run_params["command_params"]["curl_path"]: downloaded_file_path.touch(); return (0, "", "")
+            elif cmd_list[0] == run_params["command_params"]["samtools_path"] and cmd_list[1] == "faidx": fai_file_path.touch(); return (0, "", "")
+            return (1, "unexpected cmd", "error")
+        mock_run_cmd_runner = mocker.patch('bb_runners.run_external_cmd', side_effect=run_cmd_effect)
+
+        runner_arg_names = bb_runners.download_reference_runner.__code__.co_varnames
+        runner_args_to_pass = {k: v for k, v in run_params.items() if k in runner_arg_names}
+        if "command_params" in runner_arg_names and "command_params" not in runner_args_to_pass :
+             runner_args_to_pass["command_params"] = run_params.get("command_params", {})
+
+        bb_runners.download_reference_runner(**runner_args_to_pass)
+
+        curl_call_expected = mocker.call([run_params["command_params"]["curl_path"], "-L", "-o", str(downloaded_file_path), run_params["download_url"]], timeout_seconds=run_params["timeout_download"], stream_output=True, cwd=run_output_dir)
+        faidx_call_expected = mocker.call([run_params["command_params"]["samtools_path"], "faidx", str(downloaded_file_path)], cwd=run_output_dir)
+
+        mock_run_cmd_runner.assert_has_calls([curl_call_expected, faidx_call_expected], any_order=False)
+        mock_verify_checksum.assert_called_once_with(downloaded_file_path, run_params["expected_checksum"], run_params["checksum_algorithm"])
+        mock_check_fasta_indexed_in_bb_runners.assert_called_once_with(downloaded_file_path, run_params["command_params"]["samtools_path"])
+        assert fai_file_path.exists()
+        mock_write_manifest.assert_called_once()
+
+    def test_successful_download_non_fasta(self, tmp_path, mocker, default_download_params):
+        run_params = copy.deepcopy(default_download_params)
+        run_params["destination_filename"] = "dummy_file.txt"
+
+        run_params_output_root_dir_path = Path(run_params["output_root_dir"])
+        run_output_dir = run_params_output_root_dir_path / run_params["run_name"]
+        downloaded_file_path = run_output_dir / run_params["destination_filename"]
+
+        mocker.patch('bb_runners.find_tool_path', return_value=run_params["command_params"]["curl_path"])
+        mocker.patch('bb_runners._prepare_run_output_directory', return_value=run_output_dir)
+        mock_verify_checksum = mocker.patch('bb_runners.verify_file_checksum')
+        mock_write_manifest = mocker.patch('bb_runners.write_run_manifest')
+        mocker.patch('bb_runners.ensure_file_exists', side_effect=lambda fp_arg, entity_name_arg="Input file": Path(fp_arg))
+        mock_check_fasta_indexed_in_bb_runners = mocker.patch('bb_runners.check_fasta_indexed')
+
+        def run_cmd_effect(cmd_list, **kwargs):
+            if cmd_list[0] == run_params["command_params"]["curl_path"]: downloaded_file_path.touch(); return (0, "", "")
+            return (1, "unexpected cmd", "error")
+        mock_run_cmd_runner = mocker.patch('bb_runners.run_external_cmd', side_effect=run_cmd_effect)
+
+        runner_arg_names = bb_runners.download_reference_runner.__code__.co_varnames
+        runner_args_to_pass = {k: v for k, v in run_params.items() if k in runner_arg_names}
+        if "command_params" in runner_arg_names and "command_params" not in runner_args_to_pass :
+             runner_args_to_pass["command_params"] = run_params.get("command_params", {})
+
+        bb_runners.download_reference_runner(**runner_args_to_pass)
+
+        mock_run_cmd_runner.assert_called_once_with(
+            [run_params["command_params"]["curl_path"], "-L", "-o", str(downloaded_file_path), run_params["download_url"]],
+            timeout_seconds=run_params["timeout_download"], stream_output=True, cwd=run_output_dir
+        )
+        mock_verify_checksum.assert_called_once_with(downloaded_file_path, run_params["expected_checksum"], run_params["checksum_algorithm"])
+        mock_check_fasta_indexed_in_bb_runners.assert_not_called()
+        mock_write_manifest.assert_called_once()
+
+    def test_download_fails_curl_error(self, tmp_path, mocker, default_download_params):
+        run_params = default_download_params
+        run_params_output_root_dir_path = Path(run_params["output_root_dir"])
+        run_output_dir = run_params_output_root_dir_path / run_params["run_name"]
+        downloaded_file_path = run_output_dir / run_params["destination_filename"]
+
+        mocker.patch('bb_runners.find_tool_path', return_value=run_params["command_params"]["curl_path"])
+        mocker.patch('bb_runners._prepare_run_output_directory', return_value=run_output_dir)
+
+        curl_command_list = [run_params["command_params"]["curl_path"], "-L", "-o", str(downloaded_file_path), run_params["download_url"]]
+        mock_run_cmd_runner = mocker.patch('bb_runners.run_external_cmd',
+                                           side_effect=bb_utils.BaseBuddyToolError("curl failed", command=curl_command_list))
+
+        mock_path_unlink = mocker.patch.object(Path, 'unlink', return_value=None)
+        # Simulate file was partially created before error, so unlink is attempted
+        downloaded_file_path.touch() 
+
+        mock_write_manifest = mocker.patch('bb_runners.write_run_manifest')
+        mock_verify_checksum = mocker.patch('bb_runners.verify_file_checksum')
+        mock_check_fasta_indexed = mocker.patch('bb_runners.check_fasta_indexed')
+
+        runner_arg_names = bb_runners.download_reference_runner.__code__.co_varnames
+        runner_args_to_pass = {k: v for k, v in run_params.items() if k in runner_arg_names}
+        if "command_params" in runner_arg_names and "command_params" not in runner_args_to_pass :
+             runner_args_to_pass["command_params"] = run_params.get("command_params", {})
+
+        with pytest.raises(bb_utils.BaseBuddyToolError, match="curl failed"):
+            bb_runners.download_reference_runner(**runner_args_to_pass)
+
+        mock_run_cmd_runner.assert_called_once()
+        if downloaded_file_path.exists(): # Runner should attempt to unlink if file exists after error
+            mock_path_unlink.assert_called_with(downloaded_file_path)
+        else: # If runner successfully unlinks it, this also fine
+            mock_path_unlink.assert_called_once()
 
 
-    def test_missing_art_tool(self, tmp_path, mocker, default_runner_params):
-        # Mock find_tool_path to raise BaseBuddyConfigError for art_illumina
-        def find_tool_side_effect(tool_name):
-            if tool_name.startswith('art_'):
-                raise bb_utils.BaseBuddyConfigError(f"Tool {tool_name} not found")
-            if tool_name == 'samtools':
-                return default_runner_params["command_params"]["samtools_path"]
-            return None
+        mock_write_manifest.assert_not_called()
+        mock_verify_checksum.assert_not_called()
+        mock_check_fasta_indexed.assert_not_called()
 
-        mocker.patch('bb_runners.find_tool_path', side_effect=find_tool_side_effect)
+    def test_checksum_fails(self, tmp_path, mocker, default_download_params):
+        run_params = default_download_params
+        run_params_output_root_dir_path = Path(run_params["output_root_dir"])
+        run_output_dir = run_params_output_root_dir_path / run_params["run_name"]
+        downloaded_file_path = run_output_dir / run_params["destination_filename"]
 
-        # Other essential mocks that might be called before find_tool_path for ART
-        output_run_dir = default_runner_params["output_root_dir"] / default_runner_params["run_name"]
-        # output_run_dir might not be created if find_tool_path fails early, so no need to mkdir it here.
-        # mock_prepare_dir = mocker.patch('bb_runners._prepare_run_output_directory', return_value=output_run_dir)
-        # mock_ensure_file_exists = mocker.patch('bb_runners.ensure_file_exists', return_value=Path(default_runner_params["reference_fasta"]))
-        # mock_check_fasta_indexed = mocker.patch('bb_runners.check_fasta_indexed')
-        # Path(default_runner_params["reference_fasta"]).touch() # Dummy fasta might not be needed if it fails before this stage
+        mocker.patch('bb_runners.find_tool_path', return_value=run_params["command_params"]["curl_path"])
+        mocker.patch('bb_runners._prepare_run_output_directory', return_value=run_output_dir)
+        mocker.patch('bb_runners.ensure_file_exists', return_value=downloaded_file_path)
+        mocker.patch('bb_runners.run_external_cmd', side_effect=lambda *args, **kwargs: downloaded_file_path.touch() or (0,"",""))
 
-        runner_args_to_pass = {
-            k: v for k, v in default_runner_params.items()
-            if k in bb_runners.simulate_short_reads_runner.__code__.co_varnames
-        }
+        mocker.patch('bb_runners.verify_file_checksum', side_effect=bb_utils.BaseBuddyChecksumError("checksum mismatch"))
+        mock_write_manifest = mocker.patch('bb_runners.write_run_manifest')
 
-        with pytest.raises(bb_utils.BaseBuddyConfigError, match="Tool art_illumina not found"):
-            bb_runners.simulate_short_reads_runner(**runner_args_to_pass)
+        runner_arg_names = bb_runners.download_reference_runner.__code__.co_varnames
+        runner_args_to_pass = {k: v for k, v in run_params.items() if k in runner_arg_names}
+        if "command_params" in runner_arg_names and "command_params" not in runner_args_to_pass :
+             runner_args_to_pass["command_params"] = run_params.get("command_params", {})
+
+        with pytest.raises(bb_utils.BaseBuddyChecksumError, match="checksum mismatch"):
+            bb_runners.download_reference_runner(**runner_args_to_pass)
+        mock_write_manifest.assert_not_called()
+
+    def test_fasta_indexing_fails_if_fasta(self, tmp_path, mocker, default_download_params):
+        run_params = copy.deepcopy(default_download_params)
+        run_params["destination_filename"] = "dummy.fa"
+
+        run_params_output_root_dir_path = Path(run_params["output_root_dir"])
+        run_output_dir = run_params_output_root_dir_path / run_params["run_name"]
+        downloaded_file_path = run_output_dir / run_params["destination_filename"]
+
+        mocker.patch('bb_runners.find_tool_path', side_effect=lambda tool: run_params["command_params"]["curl_path"] if tool == "curl" else run_params["command_params"]["samtools_path"])
+        mocker.patch('bb_runners._prepare_run_output_directory', return_value=run_output_dir)
+        mocker.patch('bb_runners.ensure_file_exists', return_value=downloaded_file_path)
+        mocker.patch('bb_runners.verify_file_checksum') # Assume checksum passes
+        mock_write_manifest = mocker.patch('bb_runners.write_run_manifest')
+
+        # Mock bb_runners.check_fasta_indexed to raise an error that the runner should handle
+        # by writing manifest with status="failed_indexing"
+        mock_check_fasta_idx = mocker.patch('bb_runners.check_fasta_indexed', 
+                                            side_effect=bb_utils.BaseBuddyToolError("Simulated faidx error for testing manifest status"))
+
+        # Simulate curl command succeeding
+        mocker.patch('bb_runners.run_external_cmd', side_effect=lambda cmd_list, **kwargs: downloaded_file_path.touch() or (0,"","") if cmd_list[0] == run_params["command_params"]["curl_path"] else (1, "unexpected", "error"))
 
 
-    def test_invalid_input_depth(self, tmp_path, default_runner_params):
-        pytest.skip("Not yet implemented")
+        runner_arg_names = bb_runners.download_reference_runner.__code__.co_varnames
+        runner_args_to_pass = {k: v for k, v in run_params.items() if k in runner_arg_names}
+        if "command_params" in runner_arg_names and "command_params" not in runner_args_to_pass :
+             runner_args_to_pass["command_params"] = run_params.get("command_params", {})
+        
+        # Assuming download_reference_runner catches BaseBuddyToolError from check_fasta_indexed
+        # and proceeds to write the manifest with a 'failed_indexing' status.
+        bb_runners.download_reference_runner(**runner_args_to_pass)
+        
+        mock_write_manifest.assert_called_once()
+        # Ensure the status keyword argument was passed correctly to write_run_manifest
+        assert 'status' in mock_write_manifest.call_args.kwargs
+        assert mock_write_manifest.call_args.kwargs['status'] == "failed_indexing"
+

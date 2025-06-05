@@ -190,6 +190,24 @@ def ensure_directory_exists(dir_path: Union[str, Path], entity_name: str = "Dire
     logger.debug(f"{entity_name} verified at {path}")
     return path
 
+def prepare_run_output_dir(
+    output_root_dir: Path,
+    run_name: str,
+    overwrite_output: bool
+) -> Path:
+    """Creates and returns the specific output directory for the current run."""
+    run_output_dir = output_root_dir / run_name
+    if run_output_dir.exists() and not overwrite_output and any(run_output_dir.iterdir()):
+        # Check if directory is not empty. any(run_output_dir.iterdir()) is a simple way.
+        raise BaseBuddyFileError(
+            f"Run output directory '{run_output_dir}' is not empty and overwrite is not permitted. "
+            "Use --overwrite, --run-name with a new name, or clear the directory."
+        )
+    # ensure_directory_exists will handle creation and also check if it's a directory if it exists.
+    # It also handles parent creation.
+    ensure_directory_exists(run_output_dir, "Run output directory", create=True, check_write_perm=True) # check_write_perm is True by default
+    logger.info(f"Using run output directory: {run_output_dir.resolve()}")
+    return run_output_dir
 
 def check_fasta_indexed(
     reference_path: Path,
