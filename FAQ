@@ -1,0 +1,16 @@
+5. FAQ
+
+Q1: Can I run BaseBuddy on just a small region (e.g. FGFR2 locus) instead of GRCh38?
+A: Yes. Create a FASTA of only that region (using samtools faidx grch38.fa chr10:122950000-123250000 > fgfr2.fa). Ensure you also index it (samtools faidx fgfr2.fa). Then use fgfr2.fa as your reference in all commands. Signature simulation will treat it as a “custom_genome.”
+
+Q2: Why does simulate_signatures require reference_genome="GRCh38" if I supply a FASTA?
+A: When using a custom FASTA, we set input_type="custom_genome" so SigProfiler knows to operate on the provided file. If working with a built‐in genome name, use input_type="reference_genome".
+
+Q3: How can I visualize the final BAM in IGV?
+A:
+	1.	Launch IGV Desktop or go to IGV‐Web.
+	2.	Load the reference FASTA (e.g. grch38.fa), then load your BAM + .bai.
+	3.	Navigate to coordinates of interest.
+
+Q4: What if I want BaseBuddy to auto‐download GRCh38?
+A: Currently, BaseBuddy does not auto‐download a full genome because it can be 3–4 GB. We recommend users manage their own FASTA. If you wish, add a post‐install hook in setup.py or check for $REF_FASTA in your environment and download it on first run—but that’s outside the default scope.
