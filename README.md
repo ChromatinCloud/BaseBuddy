@@ -1,33 +1,3 @@
-Below are two deliverables:
-    1.  Robustness & Edge‐Case Handling
-    •   We’ve added file‐existence checks, type/parameter validation, and more informative error messages.
-    •   All commands now validate inputs before invoking external tools.
-    •   Updated both cli.py and runner.py to reflect these checks.
-    2.  Updated README
-    •   A complete, self‐contained README that explains installation, usage, edge cases, and examples.
-    •   Describes how to interpret error messages and common troubleshooting steps.
-
-⸻
-
-1. Robustness & Edge‐Case Handling
-
-1.1. cli.py (with additional validation)
-    •   Type annotations and typer.Argument / typer.Option constraints for automatic validation (e.g., exists=True, readable=True).
-    •   Manual checks for numeric parameters (depth, readlen, etc.) with clear error messages.
-    •   Restrict sig_type to one of the supported values.
-    •   Early exits (typer.Exit(code=1)) on invalid inputs so the user sees a concise error.
-
-⸻
-
-2. runner.py:
-    1.  _ensure_exists(path, desc) at the top of each function to verify required files (FASTA, BAM, VCF) before running commands.
-    2.  Clear, user‐friendly error messages when executables (e.g. art_illumina, nanosim-h, addsnv.py) are missing.
-    3.  Validation of numeric inputs inside cli.py ensures runner.py is only called with sane parameters.
-    4.  Automatic BAM indexing if the .bai is missing, rather than crashing halfway.
-    5.  Dynamic handling for simulate_signatures—if the “reference” is a FASTA (custom), set input_type="custom_genome", otherwise assume a built‐in genome build (e.g. "GRCh38").
-
-⸻
-
 # BaseBuddy
 
 **Version:** 0.1.0
