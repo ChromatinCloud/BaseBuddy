@@ -1,4 +1,4 @@
-# BaseBuddy
+## BaseBuddy
 
 **Version:** 0.1.0
 
@@ -35,7 +35,7 @@ BaseBuddy is a lightweight toolkit to simulate and manipulate sequencing data:
 
 ## Installation
 
-### Python (Conda or `venv`)
+## Python (Conda or `venv`)
 
 1. **Clone the repository** (or download release tarball):
    ```bash
@@ -45,7 +45,7 @@ BaseBuddy is a lightweight toolkit to simulate and manipulate sequencing data:
     2.  Create a Conda environment (recommended) or a venv:
 Conda
 
-# If you have mamba
+## If you have mamba
 mamba env create -f environment.yml
 mamba activate basebuddy
 pip install -e .
@@ -54,7 +54,7 @@ venv (Python 3.10+)
 
 python3 -m venv .venv
 source .venv/bin/activate
-# Install minimal dependencies (typer). You will need ART, NanoSim‐h, SAMtools, BAMSurgeon, SigProfilerSimulator on your path.
+## Install minimal dependencies (typer). You will need ART, NanoSim‐h, SAMtools, BAMSurgeon, SigProfilerSimulator on your path.
 pip install typer
 pip install -e .
 
@@ -62,7 +62,7 @@ pip install -e .
     3.  Verify installation:
 
 basebuddy version
-# Expect: "BaseBuddy 0.1.0"
+## Expect: "BaseBuddy 0.1.0"
 
 
 
@@ -75,7 +75,7 @@ DOCKER_BUILDKIT=1 docker build --progress=plain -t basebuddy:latest .
     2.  Verify:
 
 docker run --rm basebuddy version
-# Expect: "BaseBuddy 0.1.0"
+## Expect: "BaseBuddy 0.1.0"
 
 
     3.  (Optional) You may push it to a registry:
@@ -92,12 +92,12 @@ Getting a Reference FASTA
 Many tools (ART, NanoSim‐h, BAMSurgeon, SigProfilerSimulator) require a reference FASTA. You can:
     1.  Download GRCh38 from UCSC or Ensembl and index it locally:
 
-# Example (NCBI FTP)
+## Example (NCBI FTP)
 wget ftp://ftp.ncbi.nlm.nih.gov/genomes/all/GCA/000/001/405/GCA_000001405.15_GRCh38/GRCh38_latest_genomic.fna.gz
 gunzip GRCh38_latest_genomic.fna.gz
 mv GRCh38_latest_genomic.fna grch38.fa
 
-# Create index for SAMtools, BAMSurgeon, etc.
+## Create index for SAMtools, BAMSurgeon, etc.
 samtools faidx grch38.fa
 
 
@@ -105,7 +105,7 @@ samtools faidx grch38.fa
 By default, BaseBuddy expects you to supply the path to your FASTA.
 If no FASTA is found and you have a web connection, you can do:
 
-# (Illustrative only; BaseBuddy does not auto‐download by default)
+## (Illustrative only; BaseBuddy does not auto‐download by default)
 mkdir -p ~/refs/GRCh38
 cd ~/refs/GRCh38
 wget ftp://ftp.ensembl.org/pub/release-110/fasta/homo_sapiens/dna/Homo_sapiens.GRCh38.dna.primary_assembly.fa.gz
@@ -116,7 +116,7 @@ samtools faidx grch38.fa
 
     3.  Custom FASTA: If you wish to simulate reads only around a small locus (e.g., FGFR2 region), create a subset FASTA using samtools:
 
-# Extract ±50 kb around FGFR2 (chr10:123,000,000–123,200,000)
+## Extract ±50 kb around FGFR2 (chr10:123,000,000–123,200,000)
 samtools faidx grch38.fa chr10:122950000-123250000 > fgfr2_locus.fa
 samtools faidx fgfr2_locus.fa
 
@@ -135,7 +135,7 @@ Common Options
 
 3.1. Short‐Read Simulation
 
-# Example: simulate 50× coverage, 100 bp reads, HIS.eq profile, output to ./out_short
+## Example: simulate 50× coverage, 100 bp reads, HIS.eq profile, output to ./out_short
 basebuddy short /path/to/grch38.fa --depth 50 --readlen 100 --profile HS25 --outdir ./out_short
 
     •   Edge Cases:
@@ -150,7 +150,7 @@ basebuddy short /path/to/grch38.fa --depth 50 --readlen 100 --profile HS25 --out
 
 3.2. Long‐Read Simulation
 
-# Example: simulate 20× coverage Nanopore reads (R9.4.1 model), output to ./out_long
+## Example: simulate 20× coverage Nanopore reads (R9.4.1 model), output to ./out_long
 basebuddy long /path/to/grch38.fa --depth 20 --model nanopore_R9.4.1 --outdir ./out_long
 
     •   Edge Cases:
@@ -164,10 +164,10 @@ basebuddy long /path/to/grch38.fa --depth 20 --model nanopore_R9.4.1 --outdir ./
 
 3.3. Spike‐In Variants
 
-# Assumptions: 
-#  - You have a sorted & indexed BAM: spike_in.bam + spike_in.bai
-#  - You have variants.vcf
-#  - Reference FASTA (with .fai): grch38.fa + grch38.fa.fai
+## Assumptions: 
+##  - You have a sorted & indexed BAM: spike_in.bam + spike_in.bai
+##  - You have variants.vcf
+##  - Reference FASTA (with .fai): grch38.fa + grch38.fa.fai
 
 basebuddy spike /path/to/grch38.fa spike_in.bam variants.vcf \
   --vaf 0.1 \
@@ -186,10 +186,10 @@ basebuddy spike /path/to/grch38.fa spike_in.bam variants.vcf \
 
 3.4. Mutational Signature Simulation
 
-# Standard (built‐in) genome:
+## Standard (built‐in) genome:
 basebuddy signature GRCh38 --sig-type SBS --num-mutations 500 --sample-id tumorA --outdir ./out_sig
 
-# Custom FASTA:
+## Custom FASTA:
 basebuddy signature /path/to/fgfr2_locus.fa \
   --sig-type SBS \
   --num-mutations 200 \
@@ -210,7 +210,7 @@ basebuddy signature /path/to/fgfr2_locus.fa \
 
 3.5. Strand‐Bias Introduction
 
-# Assume you just produced `spiked_10pct.bam` and its index
+## Assume you just produced `spiked_10pct.bam` and its index
 basebuddy strand-bias spiked_10pct.bam \
   --out-bam biased_10pct.bam \
   --forward-fraction 0.8 \
