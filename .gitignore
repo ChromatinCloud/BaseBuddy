@@ -1,3 +1,51 @@
+# ===================================================================
+# BaseBuddy .gitignore
+#
+# STRATEGY:
+# 1. Ignore EVERYTHING inside /data/ recursively with `/data/**`.
+# 2. For EACH file we want to keep, we must explicitly un-ignore:
+#    a) The file itself.
+#    b) Every parent directory leading to that file.
+# ===================================================================
+
+# 1. Ignore all files and directories inside /data/ recursively.
+/data/**
+
+
+# -------------------------------------------------------------------
+# Whitelist Set 1: The COSMIC and SigProfiler reference files.
+# -------------------------------------------------------------------
+
+# Un-ignore the directory structure leading to the files.
+!/data/Signatures/
+!/data/Signatures/SP_Signatures/
+!/data/Signatures/SP_Signatures/SigProfiler_reference_signatures/
+!/data/Signatures/SP_Signatures/SigProfiler_reference_signatures/SigProfiler_reference_whole-genome_signatures/
+
+# Un-ignore the specific files themselves.
+!/data/Signatures/COSMIC_v3.3_CN_GRCh37.txt
+!/data/Signatures/COSMIC_v3.3_DBS_GRCh37.txt
+!/data/Signatures/COSMIC_v3.3_ID_GRCh37.txt
+!/data/Signatures/COSMIC_v3.3.1_SBS_GRCh37.txt
+!/data/Signatures/SP_Signatures/SigProfiler_reference_signatures/SigProfiler_reference_whole-genome_signatures/sigProfiler_DBS_signatures.csv
+!/data/Signatures/SP_Signatures/SigProfiler_reference_signatures/SigProfiler_reference_whole-genome_signatures/sigProfiler_ID_signatures.csv
+!/data/Signatures/SP_Signatures/SigProfiler_reference_signatures/SigProfiler_reference_whole-genome_signatures/sigProfiler_SBS_signatures_2019_05_22.csv
+
+
+# -------------------------------------------------------------------
+# Whitelist Set 2: The PCAWG sample-specific files.
+# -------------------------------------------------------------------
+
+# Un-ignore the directory path.
+!/data/SP_Signatures_in_Samples/
+
+# Un-ignore the specific files themselves.
+!/data/SP_Signatures_in_Samples/PCAWG_sigProfiler_DBS_signatures_in_samples.csv
+!/data/SP_Signatures_in_Samples/PCAWG_SigProfiler_ID_signatures_in_samples.csv
+!/data/SP_Signatures_in_Samples/PCAWG_sigProfiler_SBS_signatures_in_samples.csv
+
+
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]
@@ -173,19 +221,3 @@ tmp/
 .results_sig/
 
 ./refs/*
-
-
-# Ignore all contents of the 'data' directory initially
-/data/*
-
-# BUT, do NOT ignore the 'SP_Signatures_in_Samples' subdirectory.
-# This makes an exception for the directory itself.
-!/data/SP_Signatures_in_Samples/
-
-# Now, ignore all the files INSIDE that subdirectory...
-/data/SP_Signatures_in_Samples/*
-
-# ...EXCEPT for the three files you want to keep.
-!/data/SP_Signatures_in_Samples/PCAWG_sigProfiler_DBS_signatures_in_samples.csv
-!/data/SP_Signatures_in_Samples/PCAWG_SigProfiler_ID_signatures_in_samples.csv
-!/data/SP_Signatures_in_Samples/PCAWG_sigProfiler_SBS_signatures_in_samples.csv
