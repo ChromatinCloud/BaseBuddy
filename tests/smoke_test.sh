@@ -4,26 +4,27 @@ set -euo pipefail
 # --- Configuration ---
 # Set rebuild_image to 1 to force a rebuild of the Docker image.
 # Set rebuild_image to 0 to skip the rebuild step and use the existing image.
-rebuild_image=0
+rebuild_image=1
 
 # --- Conditional Docker Image Rebuild ---
 if [ "$rebuild_image" -eq 1 ]; then
     echo "1️⃣ Rebuilding Docker image..."
-    DOCKER_BUILDKIT=1 docker build --progress=plain -t basebuddy:latest .
+    # Corrected the build context path from "." to "../" to find the Dockerfile
+    DOCKER_BUILDKIT=1 docker build --progress=plain -t basebuddy:latest ../
 else
     echo "1️⃣ Skipping Docker image rebuild (rebuild_image=0)."
 fi
 
 echo "2️⃣ Checking version..."
-docker run --rm basebuddy version
+docker run --rm basebuddy:latest version
 
 echo "3️⃣ CLI help..."
-docker run --rm basebuddy --help
+docker run --rm basebuddy:latest --help
 
 echo "4️⃣ Subcommand help..."
 for subcmd in short long spike signature strand-bias; do # Assuming 'apply-signature' might be added here later or tested separately
   echo "----- basebuddy $subcmd --help -----"
-  docker run --rm basebuddy $subcmd --help || true
+  docker run --rm basebuddy:latest $subcmd --help || true
 done
 
 echo "4.5️⃣ Testing local signature loading (apply-signature command)..."
@@ -47,7 +48,7 @@ if [ -f "$ROOT/mini.fa" ]; then
   docker run --rm \
     -v "$ROOT/mini.fa:/data/mini.fa" \
     -v "$ROOT/results_short_smoke:/data/results_short" \
-    basebuddy short /data/mini.fa --depth 3 --outdir /data/results_short --overwrite || echo "short-read sim failed"
+    basebuddy:latest short /data/mini.fa --depth 3 --outdir /data/results_short --overwrite || echo "short-read sim failed"
 else
   echo "SKIP: mini.fa not found"
 fi
@@ -57,7 +58,7 @@ if [ -f "$ROOT/mini.fa" ]; then
   docker run --rm \
     -v "$ROOT/mini.fa:/data/mini.fa" \
     -v "$ROOT/results_long_smoke:/data/results_long" \
-    basebuddy long /data/mini.fa --depth 1 --model nanopore_R9.4.1 --outdir /data/results_long --overwrite || echo "long-read sim failed"
+    basebuddy:latest long /data/mini.fa --depth 1 --model nanopore_R9.4.1 --outdir /data/results_long --overwrite || echo "long-read sim failed"
 else
   echo "SKIP: mini.fa not found"
 fi
@@ -72,7 +73,7 @@ if [ -f "$ROOT/mini.fa" ] && [ -f "$ROOT/spike_in.bam" ] && [ -f "$ROOT/spike_in
     -v "$ROOT/spike_in.bam.bai:/data/spike_in.bam.bai" \
     -v "$ROOT/variants.vcf:/data/variants.vcf" \
     -v "$ROOT/results_spike_smoke:/data/results_spike" \
-    basebuddy spike --reference-fasta /data/mini.fa \
+    basebuddy:latest spike --reference-fasta /data/mini.fa \
       --input-bams /data/spike_in.bam \
       --variants-vcf /data/variants.vcf \
       --output-prefix-for-bam results_spiked \
@@ -87,7 +88,7 @@ if [ -f "$ROOT/mini.fa" ]; then
   docker run --rm \
     -v "$ROOT/mini.fa:/data/mini.fa" \
     -v "$ROOT/results_sig_smoke:/data/results_sig" \
-    basebuddy signature /data/mini.fa \
+    basebuddy:latest signature /data/mini.fa \
       --outdir /data/results_sig \
       --sig-type SBS \
       --num-mutations 20 \
