@@ -68,131 +68,132 @@ def simulate_short(
     temp_subset_fasta_path: Optional[Path] = None
 
     try:
+        # --- Start of the code block that needed to be indented ---
         manifest_params = copy.deepcopy(command_params) if command_params is not None else {}
-    manifest_params.update({
-        "run_name": effective_run_name, "reference_fasta": reference_fasta, "depth": depth,
-        "read_length": read_length, "art_profile": art_profile,
-        "mean_fragment_length": mean_fragment_length, "std_dev_fragment_length": std_dev_fragment_length,
-        "is_paired_end": is_paired_end, "art_platform": art_platform,
-        "auto_index_fasta": auto_index_fasta, "timeout": timeout,
-        "output_root_dir": str(output_root_dir), "overwrite_output": overwrite_output
-    })
-    id_prefix = manifest_params.get("id_prefix", f"simulated_{art_platform}_reads")
-    manifest_params["id_prefix"] = id_prefix
+        manifest_params.update({
+            "run_name": effective_run_name, "reference_fasta": reference_fasta, "depth": depth,
+            "read_length": read_length, "art_profile": art_profile,
+            "mean_fragment_length": mean_fragment_length, "std_dev_fragment_length": std_dev_fragment_length,
+            "is_paired_end": is_paired_end, "art_platform": art_platform,
+            "auto_index_fasta": auto_index_fasta, "timeout": timeout,
+            "output_root_dir": str(output_root_dir), "overwrite_output": overwrite_output
+        })
+        id_prefix = manifest_params.get("id_prefix", f"simulated_{art_platform}_reads")
+        manifest_params["id_prefix"] = id_prefix
 
-    run_output_dir = bb_utils.prepare_run_output_dir(Path(output_root_dir), effective_run_name, overwrite_output)
+        run_output_dir = bb_utils.prepare_run_output_dir(Path(output_root_dir), effective_run_name, overwrite_output)
 
-    # Parameter validation
-    if depth <= 0: raise bb_utils.BaseBuddyInputError(f"Sequencing depth must be a positive integer, got {depth}.")
-    if read_length <= 0: raise bb_utils.BaseBuddyInputError(f"Read length must be a positive integer, got {read_length}.")
-    if is_paired_end:
-        if mean_fragment_length <= 0: raise bb_utils.BaseBuddyInputError(f"Mean fragment length must be positive for paired-end reads, got {mean_fragment_length}.")
-        if std_dev_fragment_length < 0: raise bb_utils.BaseBuddyInputError(f"Standard deviation of fragment length cannot be negative, got {std_dev_fragment_length}.")
+        # Parameter validation
+        if depth <= 0: raise bb_utils.BaseBuddyInputError(f"Sequencing depth must be a positive integer, got {depth}.")
+        if read_length <= 0: raise bb_utils.BaseBuddyInputError(f"Read length must be a positive integer, got {read_length}.")
+        if is_paired_end:
+            if mean_fragment_length <= 0: raise bb_utils.BaseBuddyInputError(f"Mean fragment length must be positive for paired-end reads, got {mean_fragment_length}.")
+            if std_dev_fragment_length < 0: raise bb_utils.BaseBuddyInputError(f"Standard deviation of fragment length cannot be negative, got {std_dev_fragment_length}.")
 
         # Tool paths
-    art_exe_name = f"art_{art_platform}"
-    art_exe_path = bb_utils.find_tool_path(art_exe_name)
-    samtools_exe_path = bb_utils.find_tool_path("samtools")
+        art_exe_name = f"art_{art_platform}"
+        art_exe_path = bb_utils.find_tool_path(art_exe_name)
+        samtools_exe_path = bb_utils.find_tool_path("samtools")
 
-    # Reference FASTA handling
-    original_reference_path_obj = bb_utils.ensure_file_exists(reference_fasta, "Reference FASTA").resolve()
-    bb_utils.check_fasta_indexed(original_reference_path_obj, samtools_exe_path, auto_index_if_missing=auto_index_fasta)
-    manifest_params["original_reference_fasta"] = str(original_reference_path_obj)
+        # Reference FASTA handling
+        original_reference_path_obj = bb_utils.ensure_file_exists(reference_fasta, "Reference FASTA").resolve()
+        bb_utils.check_fasta_indexed(original_reference_path_obj, samtools_exe_path, auto_index_if_missing=auto_index_fasta)
+        manifest_params["original_reference_fasta"] = str(original_reference_path_obj)
 
-    reference_after_variants = original_reference_path_obj # Start with original
+        reference_after_variants = original_reference_path_obj # Start with original
 
-    # 1. Apply variants if provided
-    if variants_list and len(variants_list) > 0:
-        logger.info(f"Applying {len(variants_list)} variants to reference FASTA {original_reference_path_obj}.")
-        temp_mutated_fasta_path = run_output_dir / f"temp_mutated_ref_{effective_run_name}.fa"
-        bb_utils.apply_variants_to_fasta(original_reference_path_obj, variants_list, temp_mutated_fasta_path)
-        bb_utils.check_fasta_indexed(temp_mutated_fasta_path, samtools_exe_path, auto_index_if_missing=True)
-        reference_after_variants = temp_mutated_fasta_path # This becomes the source for potential subsetting
-        manifest_params["variants_applied_to_reference"] = True
-        manifest_params["num_variants_applied"] = len(variants_list)
-        manifest_params["mutated_reference_source"] = str(temp_mutated_fasta_path.name)
-    else:
-        manifest_params["variants_applied_to_reference"] = False
+        # 1. Apply variants if provided
+        if variants_list and len(variants_list) > 0:
+            logger.info(f"Applying {len(variants_list)} variants to reference FASTA {original_reference_path_obj}.")
+            temp_mutated_fasta_path = run_output_dir / f"temp_mutated_ref_{effective_run_name}.fa"
+            bb_utils.apply_variants_to_fasta(original_reference_path_obj, variants_list, temp_mutated_fasta_path)
+            bb_utils.check_fasta_indexed(temp_mutated_fasta_path, samtools_exe_path, auto_index_if_missing=True)
+            reference_after_variants = temp_mutated_fasta_path # This becomes the source for potential subsetting
+            manifest_params["variants_applied_to_reference"] = True
+            manifest_params["num_variants_applied"] = len(variants_list)
+            manifest_params["mutated_reference_source"] = str(temp_mutated_fasta_path.name)
+        else:
+            manifest_params["variants_applied_to_reference"] = False
 
-    current_reference_for_art = reference_after_variants # This will be used by ART, possibly after subsetting
+        current_reference_for_art = reference_after_variants # This will be used by ART, possibly after subsetting
 
-    # 2. Extract genomic ranges if provided
-    if genomic_ranges and len(genomic_ranges) > 0:
-        logger.info(f"Extracting {len(genomic_ranges)} genomic ranges from {reference_after_variants}.")
-        temp_subset_fasta_path = run_output_dir / f"temp_subset_ref_{effective_run_name}.fa"
-        bb_utils.extract_ranges_to_fasta(reference_after_variants, genomic_ranges, temp_subset_fasta_path, samtools_path=samtools_exe_path)
-        bb_utils.check_fasta_indexed(temp_subset_fasta_path, samtools_exe_path, auto_index_if_missing=True)
-        current_reference_for_art = temp_subset_fasta_path # ART will use the subset
-        manifest_params["genomic_ranges_applied"] = True
-        manifest_params["num_genomic_ranges"] = len(genomic_ranges)
-        manifest_params["genomic_ranges_requested"] = genomic_ranges
-        manifest_params["subset_reference_fasta_path_for_art"] = str(temp_subset_fasta_path.name)
-    else:
-        manifest_params["genomic_ranges_applied"] = False
+        # 2. Extract genomic ranges if provided
+        if genomic_ranges and len(genomic_ranges) > 0:
+            logger.info(f"Extracting {len(genomic_ranges)} genomic ranges from {reference_after_variants}.")
+            temp_subset_fasta_path = run_output_dir / f"temp_subset_ref_{effective_run_name}.fa"
+            bb_utils.extract_ranges_to_fasta(reference_after_variants, genomic_ranges, temp_subset_fasta_path, samtools_path=samtools_exe_path)
+            bb_utils.check_fasta_indexed(temp_subset_fasta_path, samtools_exe_path, auto_index_if_missing=True)
+            current_reference_for_art = temp_subset_fasta_path # ART will use the subset
+            manifest_params["genomic_ranges_applied"] = True
+            manifest_params["num_genomic_ranges"] = len(genomic_ranges)
+            manifest_params["genomic_ranges_requested"] = genomic_ranges
+            manifest_params["subset_reference_fasta_path_for_art"] = str(temp_subset_fasta_path.name)
+        else:
+            manifest_params["genomic_ranges_applied"] = False
 
-    art_output_prefix_path = run_output_dir / id_prefix
+        art_output_prefix_path = run_output_dir / id_prefix
 
-    # ART command construction
-    cmd = [art_exe_path, "-ss", art_profile, "-i", str(current_reference_for_art),
-           "-l", str(read_length), "-f", str(depth), "-o", str(art_output_prefix_path)]
-    if is_paired_end:
-        cmd.extend(["-p", "-m", str(mean_fragment_length), "-s", str(std_dev_fragment_length)])
-    if manifest_params.get("quality_shift") is not None: cmd.extend(["-qs", str(manifest_params["quality_shift"])])
-    if manifest_params.get("quality_shift2") is not None and is_paired_end: cmd.extend(["-qs2", str(manifest_params["quality_shift2"])])
-    if manifest_params.get("random_seed") is not None: cmd.extend(["-rs", str(manifest_params["random_seed"])])
-    if manifest_params.get("no_aln_output", False): cmd.append("-na")
+        # ART command construction
+        cmd = [art_exe_path, "-ss", art_profile, "-i", str(current_reference_for_art),
+               "-l", str(read_length), "-f", str(depth), "-o", str(art_output_prefix_path)]
+        if is_paired_end:
+            cmd.extend(["-p", "-m", str(mean_fragment_length), "-s", str(std_dev_fragment_length)])
+        if manifest_params.get("quality_shift") is not None: cmd.extend(["-qs", str(manifest_params["quality_shift"])])
+        if manifest_params.get("quality_shift2") is not None and is_paired_end: cmd.extend(["-qs2", str(manifest_params["quality_shift2"])])
+        if manifest_params.get("random_seed") is not None: cmd.extend(["-rs", str(manifest_params["random_seed"])])
+        if manifest_params.get("no_aln_output", False): cmd.append("-na")
 
-    logger.info(f"Preparing to run {art_exe_name}...")
-    bb_utils.run_external_cmd(cmd, timeout_seconds=timeout, stream_output=True, cwd=run_output_dir)
+        logger.info(f"Preparing to run {art_exe_name}...")
+        bb_utils.run_external_cmd(cmd, timeout_seconds=timeout, stream_output=True, cwd=run_output_dir)
 
-    logger.info(f"{art_exe_name} simulation completed. Verifying output files...")
-    output_files_manifest: List[Dict[str,str]] = []
+        logger.info(f"{art_exe_name} simulation completed. Verifying output files...")
+        output_files_manifest: List[Dict[str,str]] = []
 
-    if is_paired_end:
-        r1_path = art_output_prefix_path.with_name(art_output_prefix_path.name + "1.fq")
-        r2_path = art_output_prefix_path.with_name(art_output_prefix_path.name + "2.fq")
-        bb_utils.ensure_file_exists(r1_path, "Expected ART output R1 FASTQ")
-        bb_utils.ensure_file_exists(r2_path, "Expected ART output R2 FASTQ")
-        output_files_manifest.extend([
-            {"name": "Simulated Reads (R1)", "path": r1_path.name, "type": "FASTQ"},
-            {"name": "Simulated Reads (R2)", "path": r2_path.name, "type": "FASTQ"}
-        ])
-    else:
-        r_path = art_output_prefix_path.with_suffix(".fq")
-        bb_utils.ensure_file_exists(r_path, "Expected ART output FASTQ")
-        output_files_manifest.append({"name": "Simulated Reads", "path": r_path.name, "type": "FASTQ"})
+        if is_paired_end:
+            r1_path = art_output_prefix_path.with_name(art_output_prefix_path.name + "1.fq")
+            r2_path = art_output_prefix_path.with_name(art_output_prefix_path.name + "2.fq")
+            bb_utils.ensure_file_exists(r1_path, "Expected ART output R1 FASTQ")
+            bb_utils.ensure_file_exists(r2_path, "Expected ART output R2 FASTQ")
+            output_files_manifest.extend([
+                {"name": "Simulated Reads (R1)", "path": r1_path.name, "type": "FASTQ"},
+                {"name": "Simulated Reads (R2)", "path": r2_path.name, "type": "FASTQ"}
+            ])
+        else:
+            r_path = art_output_prefix_path.with_suffix(".fq")
+            bb_utils.ensure_file_exists(r_path, "Expected ART output FASTQ")
+            output_files_manifest.append({"name": "Simulated Reads", "path": r_path.name, "type": "FASTQ"})
 
-    if not manifest_params.get("no_aln_output", False):
-        aln_path = art_output_prefix_path.with_suffix(".aln")
-        if aln_path.exists():
-            bb_utils.ensure_file_exists(aln_path, "ART Alignment ALN")
-            output_files_manifest.append({"name": "ART Alignment ALN", "path": aln_path.name, "type": "ALN_ART"})
+        if not manifest_params.get("no_aln_output", False):
+            aln_path = art_output_prefix_path.with_suffix(".aln")
+            if aln_path.exists():
+                bb_utils.ensure_file_exists(aln_path, "ART Alignment ALN")
+                output_files_manifest.append({"name": "ART Alignment ALN", "path": aln_path.name, "type": "ALN_ART"})
 
-    manifest_path = run_output_dir / "manifest.json"
-    bb_utils.write_run_manifest(
-        manifest_path=manifest_path, run_name=effective_run_name,
-        command_name=f"simulate_short_reads_{art_platform}", parameters=manifest_params,
-        output_files=output_files_manifest, reference_genome_path=str(original_reference_path_obj) # Always report original ref
-    )
-    logger.info(f"Short read simulation successful for run '{effective_run_name}'. Output in '{run_output_dir}'.")
+        manifest_path = run_output_dir / "manifest.json"
+        bb_utils.write_run_manifest(
+            manifest_path=manifest_path, run_name=effective_run_name,
+            command_name=f"simulate_short_reads_{art_platform}", parameters=manifest_params,
+            output_files=output_files_manifest, reference_genome_path=str(original_reference_path_obj) # Always report original ref
+        )
+        logger.info(f"Short read simulation successful for run '{effective_run_name}'. Output in '{run_output_dir}'.")
 
-    return_dict = {
-        "run_name": effective_run_name, "output_directory": str(run_output_dir.resolve()),
-        "output_files": output_files_manifest, "manifest_path": str(manifest_path.resolve()),
-        "reference_fasta_used": str(original_reference_path_obj) # Report original ref here too
-    }
-    if temp_mutated_fasta_path:
-        return_dict["mutated_reference_info"] = {
-            "mutated_fasta_path": str(temp_mutated_fasta_path.resolve()), # Path to the intermediate mutated FASTA
-            "num_variants_applied": len(variants_list) if variants_list else 0
+        return_dict = {
+            "run_name": effective_run_name, "output_directory": str(run_output_dir.resolve()),
+            "output_files": output_files_manifest, "manifest_path": str(manifest_path.resolve()),
+            "reference_fasta_used": str(original_reference_path_obj) # Report original ref here too
         }
-    if temp_subset_fasta_path:
-        return_dict["subset_reference_info"] = {
-            "subset_fasta_path_used_for_art": str(temp_subset_fasta_path.resolve()), # Path to the subset FASTA actually used
-            "genomic_ranges_requested": genomic_ranges
-        }
-    return return_dict
-
+        if temp_mutated_fasta_path:
+            return_dict["mutated_reference_info"] = {
+                "mutated_fasta_path": str(temp_mutated_fasta_path.resolve()), # Path to the intermediate mutated FASTA
+                "num_variants_applied": len(variants_list) if variants_list else 0
+            }
+        if temp_subset_fasta_path:
+            return_dict["subset_reference_info"] = {
+                "subset_fasta_path_used_for_art": str(temp_subset_fasta_path.resolve()), # Path to the subset FASTA actually used
+                "genomic_ranges_requested": genomic_ranges
+            }
+        return return_dict
+    
     finally:
         # Cleanup temp_mutated_fasta_path (variants applied)
         if temp_mutated_fasta_path and temp_mutated_fasta_path.exists():
@@ -930,5 +931,3 @@ def introduce_strand_bias(in_bam: str, out_bam: str, forward_fraction: float = 0
     subprocess.run(["samtools", "sort", "-o", out_bam, str(merged)], check=True)
     subprocess.run(["samtools", "index", out_bam], check=True)
     shutil.rmtree(temp_dir)
-
-[end of src/basebuddy/runner.py]
