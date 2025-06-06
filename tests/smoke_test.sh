@@ -21,7 +21,7 @@ echo "4.5️⃣ Testing local signature loading (apply-signature command)..."
 # the apply_signature_to_fasta runner.
 # smoke_test.fa is expected at /opt/app/src/basebuddy/data/smoke_test_data/smoke_test.fa in the image
 docker run --rm basebuddy:latest basebuddy apply-signature \
-  /opt/app/src/basebuddy/data/smoke_test_data/smoke_test.fa \
+  /opt/app/tests/test_data/minimal_test.fa \
   mutated_smoke.fa \
   SBS1 \
   10 \

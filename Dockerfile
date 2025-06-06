@@ -23,7 +23,7 @@ RUN /opt/conda/envs/basebuddy/bin/pip install --no-cache-dir SigProfilerSimulato
 
 # Copy source for editable install
 # Explicitly copy data directory to ensure it's included
-COPY src/basebuddy/data /opt/app/src/basebuddy/data
+# COPY src/basebuddy/data /opt/app/src/basebuddy/data
 COPY . .
 
 # Ensure ownership so pip can write egg-info
