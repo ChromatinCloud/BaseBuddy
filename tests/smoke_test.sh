@@ -1,8 +1,18 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-echo "1️⃣ Rebuilding Docker image..."
-DOCKER_BUILDKIT=1 docker build --progress=plain -t basebuddy:latest .
+# --- Configuration ---
+# Set rebuild_image to 1 to force a rebuild of the Docker image.
+# Set rebuild_image to 0 to skip the rebuild step and use the existing image.
+rebuild_image=0
+
+# --- Conditional Docker Image Rebuild ---
+if [ "$rebuild_image" -eq 1 ]; then
+    echo "1️⃣ Rebuilding Docker image..."
+    DOCKER_BUILDKIT=1 docker build --progress=plain -t basebuddy:latest .
+else
+    echo "1️⃣ Skipping Docker image rebuild (rebuild_image=0)."
+fi
 
 echo "2️⃣ Checking version..."
 docker run --rm basebuddy version
