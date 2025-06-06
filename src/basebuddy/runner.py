@@ -582,147 +582,6 @@ def simulate_long(
                 logger.warning(f"Could not delete temporary subset FASTA file {temp_subset_fasta_path} or its index: {e}")
 
 
-def simulate_signatures(
-    output_root_dir: Path,
-    reference_input: str,
-    sig_type: str,
-    num_mutations: int,
-    sample_id: str = "Sample1",
-    run_name: Optional[str] = None,
-    command_params: Optional[Dict[str, Any]] = None,
-    exome: bool = False,
-    overwrite_output: bool = False,
-    auto_index_fasta: bool = True
-) -> Dict[str, Any]:
-
-    effective_run_name = run_name if run_name else bb_utils.generate_unique_run_name(f"simulate_signatures_{sig_type}")
-    logger.info(f"Initiating mutational signature simulation for run: {effective_run_name}")
-
-    manifest_params = copy.deepcopy(command_params) if command_params is not None else {}
-    manifest_params.update({
-        "run_name": effective_run_name, "reference_input": reference_input, "sig_type": sig_type,
-        "num_mutations": num_mutations, "sample_id": sample_id, "exome": exome,
-        "overwrite_output": overwrite_output, "auto_index_fasta": auto_index_fasta,
-        "output_root_dir": str(output_root_dir)
-    })
-
-    run_output_dir = bb_utils.prepare_run_output_dir(Path(output_root_dir), effective_run_name, overwrite_output)
-
-    genome_build_arg: Optional[str] = None
-    custom_genome_path_arg: Optional[str] = None
-    ref_display_for_manifest = reference_input
-    ref_path_for_igv: Optional[str] = None # Not used by this runner for IGV session
-
-    if Path(reference_input).is_file() or \
-       any(reference_input.endswith(ext) for ext in [".fa", ".fasta", ".fna"]) or \
-       "/" in reference_input or "\\" in reference_input:
-
-        logger.info(f"Treating reference_input '{reference_input}' as a custom FASTA path.")
-        ref_path_obj = bb_utils.ensure_file_exists(reference_input, "Reference FASTA").resolve()
-        if auto_index_fasta:
-            samtools_exe_path = bb_utils.find_tool_path("samtools")
-            bb_utils.check_fasta_indexed(ref_path_obj, samtools_exe_path, auto_index_if_missing=True)
-        custom_genome_path_arg = str(ref_path_obj)
-        ref_display_for_manifest = str(ref_path_obj)
-        genome_build_name = Path(reference_input).stem.split('.')[0]
-        if genome_build_name in ["GRCh37", "GRCh38", "hg19", "hg38", "mm10"]:
-             genome_build_arg = genome_build_name
-        else:
-            genome_build_arg = manifest_params.get("genome_build_str_for_custom", "GRCh38")
-        logger.info(f"Using genome_build='{genome_build_arg}' and custom_genome='{custom_genome_path_arg}' for SigProfilerSimulator.")
-    else:
-        logger.info(f"Treating reference_input '{reference_input}' as a genome build string.")
-        genome_build_arg = reference_input
-        ref_display_for_manifest = genome_build_arg # Store the string (e.g. "GRCh38")
-
-    from SigProfilerSimulator import SigProfilerSimulator
-
-    try:
-        logger.info(f"Running SigProfilerSimulator for sample '{sample_id}' in '{run_output_dir}'...")
-        sps = SigProfilerSimulator(
-            project=sample_id,
-            genome_build=genome_build_arg,
-            custom_genome=custom_genome_path_arg,
-            outdir=str(run_output_dir),
-            num_samples=1,
-            exome=exome,
-            type=[sig_type],
-            total_mutations=[num_mutations],
-            chrom_based=manifest_params.get("chrom_based", False),
-            seed=manifest_params.get("seed", 0)
-        )
-    except Exception as e:
-        logger.error(f"SigProfilerSimulator failed: {e}")
-        raise bb_utils.BaseBuddyToolError(message=f"SigProfilerSimulator tool failed: {str(e)}", command=["SigProfilerSimulator", "...details..."])
-
-    output_files_manifest: List[Dict[str,str]] = []
-    actual_sps_output_dir = run_output_dir / sample_id / sig_type
-    vcf_filename = f"{sample_id}.{sig_type}.all" # This is the VCF with all mutations
-    output_vcf_path = actual_sps_output_dir / vcf_filename
-
-    if output_vcf_path.exists():
-        bb_utils.ensure_file_exists(output_vcf_path, "Simulated VCF from SigProfilerSimulator")
-        relative_vcf_path = output_vcf_path.relative_to(run_output_dir)
-        output_files_manifest.append({"name": f"Simulated VCF ({sig_type})", "path": str(relative_vcf_path), "type": "VCF"})
-    else:
-        logger.warning(f"Primary output VCF from SigProfilerSimulator not found at expected path: {output_vcf_path}")
-        if actual_sps_output_dir.exists():
-            logger.warning(f"Contents of {actual_sps_output_dir}: {list(actual_sps_output_dir.iterdir())}")
-        else:
-            logger.warning(f"SigProfilerSimulator output directory {actual_sps_output_dir} does not exist.")
-
-    manifest_path = run_output_dir / "manifest.json"
-    bb_utils.write_run_manifest(
-        manifest_path=manifest_path, run_name=effective_run_name, command_name="simulate_signatures",
-        parameters=manifest_params, output_files=output_files_manifest,
-        reference_genome_path=ref_display_for_manifest
-    )
-    logger.info(f"Mutational signature simulation successful for run '{effective_run_name}'. Output in '{run_output_dir}'.")
-
-    return {
-        "run_name": effective_run_name,
-        "output_directory": str(run_output_dir.resolve()),
-        "output_files": output_files_manifest,
-        "manifest_path": str(manifest_path.resolve()),
-        "reference_used": ref_display_for_manifest,
-        "actual_sps_output_dir": str(actual_sps_output_dir.resolve())
-    }
-
-
-def introduce_strand_bias(in_bam: str, out_bam: str, forward_fraction: float = 0.5, seed: int = 0) -> None:
-    _ensure_exists(in_bam)
-    if not Path(in_bam + ".bai").exists():
-        subprocess.run(["samtools", "index", in_bam], check=True)
-    outdir = Path(out_bam).parent
-    outdir.mkdir(parents=True, exist_ok=True)
-    temp_dir = outdir / "strandtemp"
-    temp_dir.mkdir(exist_ok=True)
-    plus_bam = temp_dir / "plus.bam"
-    minus_bam = temp_dir / "minus.bam"
-    subprocess.run(["samtools", "view", "-h", "-F", "16", in_bam, "-o", str(plus_bam)], check=True)
-    subprocess.run(["samtools", "view", "-h", "-f", "16", in_bam, "-o", str(minus_bam)], check=True)
-    plus_keep = forward_fraction
-    minus_keep = 1.0 - forward_fraction
-    subprocess.run([
-        "samtools", "view", "-s",
-        f"{seed}.{int(plus_keep * 1000):03d}",
-        "-b", str(plus_bam), "-o", str(temp_dir / "plus_sub.bam")
-    ], check=True)
-    subprocess.run([
-        "samtools", "view", "-s",
-        f"{seed}.{int(minus_keep * 1000):03d}",
-        "-b", str(minus_bam), "-o", str(temp_dir / "minus_sub.bam")
-    ], check=True)
-    merged = temp_dir / "merged.bam"
-    subprocess.run([
-        "samtools", "merge", "-f", str(merged),
-        str(temp_dir / "plus_sub.bam"), str(temp_dir / "minus_sub.bam"),
-    ], check=True)
-    subprocess.run(["samtools", "sort", "-o", out_bam, str(merged)], check=True)
-    subprocess.run(["samtools", "index", out_bam], check=True)
-    shutil.rmtree(temp_dir)
-
-
 def apply_signature_to_fasta(
     output_root_dir: Path,
     run_name: Optional[str], # If None, will be auto-generated
@@ -766,7 +625,6 @@ def apply_signature_to_fasta(
         raise bb_utils.BaseBuddyInputError("Number of mutations must be a positive integer.")
     if target_regions:
         _logger.warning("target_regions parameter is provided but not yet implemented in this version. Mutations will be applied genome-wide.")
-        # Future: Implement region-specific context gathering and mutation application.
 
     input_fasta_path = bb_utils.ensure_file_exists(input_fasta_path_str, "Input FASTA for signature application")
     samtools_exe_path = bb_utils.find_tool_path("samtools")
@@ -779,49 +637,68 @@ def apply_signature_to_fasta(
         )
 
     # Load Signature Profile
-    # Correctly determine path to bundled signatures data directory
-    # Assuming signature_utils.py is in src/basebuddy/ and data dir is src/basebuddy/data/
     bundled_signatures_dir = Path(sig_utils.__file__).resolve().parent / "data" / "signatures"
-    _logger.debug(f"Looking for bundled signatures in: {bundled_signatures_dir}")
+    _logger.debug(f"Bundled signatures directory: {bundled_signatures_dir}")
 
     sig_file_to_parse: Optional[Path] = None
-    is_bundled_sig = False
-    active_signature_name: str
+    active_signature_name: str = "" # Must be set
+    signature_profile_to_apply: Dict[str, float] = {}
 
-    if not Path(signature_id_or_path).is_file(): # Try as bundled ID
-        _logger.info(f"Treating '{signature_id_or_path}' as a bundled signature ID.")
-        sig_file_to_parse = sig_utils.get_bundled_sbs_signature_path(signature_id_or_path, bundled_signatures_dir)
-        if not sig_file_to_parse or not sig_file_to_parse.exists():
-            raise bb_utils.BaseBuddyInputError(
-                f"Bundled signature ID '{signature_id_or_path}' not found. "
-                f"Expected file: {sig_file_to_parse or (bundled_signatures_dir / (signature_id_or_path.lower()+'.tsv'))}"
-            )
-        is_bundled_sig = True
-        active_signature_name = signature_id_or_path # Use the ID as the key
-    else: # Treat as a direct file path
-        _logger.info(f"Treating '{signature_id_or_path}' as a direct path to a signature matrix file.")
-        sig_file_to_parse = bb_utils.ensure_file_exists(signature_id_or_path, "Custom signature matrix file")
-        # For custom path, derive active_signature_name, or require it from user?
-        # For now, if it's a path, we'll try to use its stem, or check if the file contains that name.
-        active_signature_name = Path(signature_id_or_path).stem
+    # Determine if signature_id_or_path is a bundled ID or a direct path
+    # And load the appropriate signature profile.
+    # This logic assumes SBS for now, as apply_sbs_mutations_to_sequence is SBS-specific.
 
+    potential_sig_id = signature_id_or_path.upper() # Normalize for prefix checking
+    sig_type_prefix = None
+    if potential_sig_id.startswith("SBS"):
+        sig_type_prefix = "sbs"
+    elif potential_sig_id.startswith("DBS"):
+        sig_type_prefix = "dbs"
+    elif potential_sig_id.startswith("ID"):
+        sig_type_prefix = "id"
 
-    _logger.info(f"Loading signature matrix from: {sig_file_to_parse}")
-    all_signatures_in_file = sig_utils.parse_sbs_signature_matrix(sig_file_to_parse)
+    if sig_type_prefix and not Path(signature_id_or_path).is_file(): # Check if it's NOT a file path AND has a known prefix
+        _logger.info(f"Treating '{signature_id_or_path}' as a bundled signature ID of type '{sig_type_prefix}'.")
+        master_file_path = sig_utils.get_bundled_signature_master_file_path(sig_type_prefix, bundled_signatures_dir)
+        if not master_file_path or not master_file_path.exists():
+            # Fallback to old method for sbs1.tsv / sbs5.tsv if master files are not yet populated
+            if sig_type_prefix == "sbs" and (signature_id_or_path.lower() == "sbs1" or signature_id_or_path.lower() == "sbs5"):
+                 _logger.warning(f"Master file for '{sig_type_prefix}' not found at '{master_file_path}'. Attempting to load '{signature_id_or_path}.tsv' directly.")
+                 sig_file_to_parse = bundled_signatures_dir / f"{signature_id_or_path.lower()}.tsv"
+                 if not sig_file_to_parse.exists():
+                     raise bb_utils.BaseBuddyInputError(f"Fallback bundled signature file '{sig_file_to_parse}' also not found.")
+                 all_signatures_in_file = sig_utils.parse_signature_matrix_tsv(sig_file_to_parse)
+                 active_signature_name = signature_id_or_path
+            else:
+                raise bb_utils.BaseBuddyInputError(f"Bundled master signature file for type '{sig_type_prefix}' not found at '{master_file_path}'.")
+        else:
+            all_signatures_in_file = sig_utils.parse_signature_matrix_tsv(master_file_path)
+            active_signature_name = signature_id_or_path # The specific ID like "SBS1"
 
-    if active_signature_name not in all_signatures_in_file:
-        if len(all_signatures_in_file) == 1 and not is_bundled_sig: # If custom file and only one sig, use it
-            original_active_name = active_signature_name
+        if active_signature_name not in all_signatures_in_file:
+            raise bb_utils.BaseBuddyInputError(f"Signature ID '{active_signature_name}' not found in master file '{sig_file_to_parse or master_file_path}'. Available: {list(all_signatures_in_file.keys())}")
+        signature_profile_to_apply = all_signatures_in_file[active_signature_name]
+
+    else: # Treat as a direct file path to a custom signature matrix
+        _logger.info(f"Treating '{signature_id_or_path}' as a direct path to a custom signature matrix file.")
+        custom_file_path = bb_utils.ensure_file_exists(signature_id_or_path, "Custom signature matrix file")
+        all_signatures_in_file = sig_utils.parse_signature_matrix_tsv(custom_file_path)
+
+        # Determine which signature to use from the custom file
+        file_stem_name = Path(signature_id_or_path).stem
+        if file_stem_name in all_signatures_in_file:
+            active_signature_name = file_stem_name
+        elif len(all_signatures_in_file) == 1:
             active_signature_name = list(all_signatures_in_file.keys())[0]
-            _logger.warning(f"Signature name '{original_active_name}' (derived from file stem) not found in matrix. "
-                            f"Using the only available signature: '{active_signature_name}'.")
+            _logger.warning(f"Using the only signature '{active_signature_name}' found in custom file '{custom_file_path}'.")
         else:
             raise bb_utils.BaseBuddyInputError(
-                f"Signature '{active_signature_name}' not found in matrix file '{sig_file_to_parse}'. "
-                f"Available signatures: {list(all_signatures_in_file.keys())}"
+                f"Could not determine which signature to use from custom file '{custom_file_path}'. "
+                f"File stem '{file_stem_name}' not found and multiple signatures exist: {list(all_signatures_in_file.keys())}. "
+                "Hint: Name your custom file like 'MySignature.tsv' if 'MySignature' is the column header, or ensure only one signature is in the TSV."
             )
+        signature_profile_to_apply = all_signatures_in_file[active_signature_name]
 
-    signature_profile_to_apply = all_signatures_in_file[active_signature_name]
     actual_command_params["active_signature_name_used"] = active_signature_name
     _logger.info(f"Successfully loaded signature profile for '{active_signature_name}'.")
 
@@ -838,13 +715,17 @@ def apply_signature_to_fasta(
 
             for contig_name in fasta_in.references:
                 if total_applied_mutations >= num_mutations:
-                    # Write remaining original contigs if all mutations are applied
                     original_seq = fasta_in.fetch(contig_name)
                     fasta_out.write(f">{contig_name}\n{original_seq}\n")
                     continue
 
                 original_seq = fasta_in.fetch(contig_name)
                 _logger.debug(f"Processing contig '{contig_name}' (length: {len(original_seq)}).")
+
+                # Currently, application logic is SBS-specific.
+                # Future: if sig_type_prefix == "dbs", call dbs_context_and_apply, etc.
+                if not active_signature_name.lower().startswith("sbs"): # Basic check
+                    _logger.warning(f"Signature '{active_signature_name}' does not seem to be an SBS signature. SBS-specific mutation application will be attempted.")
 
                 available_contexts = sig_utils.get_sbs_mutation_contexts(original_seq)
                 if not available_contexts:
@@ -869,40 +750,36 @@ def apply_signature_to_fasta(
 
     except Exception as e:
         _logger.error(f"Error during FASTA processing or mutation application: {e}")
-        # Clean up potentially incomplete output file
         if output_modified_fasta_path.exists():
-            try:
-                output_modified_fasta_path.unlink()
-            except OSError:
-                _logger.warning(f"Could not remove incomplete output FASTA: {output_modified_fasta_path}")
+            try: output_modified_fasta_path.unlink()
+            except OSError: _logger.warning(f"Could not remove incomplete output FASTA: {output_modified_fasta_path}")
         raise bb_utils.BaseBuddyToolError(f"Failed to apply signature to FASTA: {e}", command=["apply_signature_to_fastaInternal"], stderr=str(e))
 
 
     _logger.info(f"Finished applying mutations. Total applied: {total_applied_mutations} / Requested: {num_mutations}.")
 
-    # Index Output FASTA
     bb_utils.check_fasta_indexed(output_modified_fasta_path, samtools_exe_path, auto_index_if_missing=True)
     output_index_path = output_modified_fasta_path.with_suffix(output_modified_fasta_path.suffix + ".fai")
 
-    # Manifest
     actual_command_params["num_mutations_applied"] = total_applied_mutations
     output_files_manifest = [
         {"name": "Mutated FASTA by signature", "path": output_modified_fasta_path.name, "type": "FASTA"},
-        {"name": "Mutated FASTA Index", "path": output_index_path.name, "type": "FASTA_INDEX"}
     ]
+    if output_index_path.exists():
+        output_files_manifest.append({"name": "Mutated FASTA Index", "path": output_index_path.name, "type": "FASTA_INDEX"})
 
     manifest_path = run_output_dir / "manifest.json"
     bb_utils.write_run_manifest(
         manifest_path=manifest_path,
-        run_name=effective_run_name, # use effective_run_name
+        run_name=effective_run_name,
         command_name="apply_signature_to_fasta",
         parameters=actual_command_params,
         output_files=output_files_manifest,
-        reference_genome_path=str(input_fasta_path.resolve()) # Original input as reference context
+        reference_genome_path=str(input_fasta_path.resolve())
     )
 
     return {
-        "run_name": effective_run_name, # use effective_run_name
+        "run_name": effective_run_name,
         "output_directory": str(run_output_dir.resolve()),
         "output_modified_fasta_path": str(output_modified_fasta_path.resolve()),
         "output_modified_fasta_index_path": str(output_index_path.resolve()) if output_index_path.exists() else None,
@@ -1053,3 +930,5 @@ def introduce_strand_bias(in_bam: str, out_bam: str, forward_fraction: float = 0
     subprocess.run(["samtools", "sort", "-o", out_bam, str(merged)], check=True)
     subprocess.run(["samtools", "index", out_bam], check=True)
     shutil.rmtree(temp_dir)
+
+[end of src/basebuddy/runner.py]

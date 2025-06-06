@@ -206,6 +206,18 @@ basebuddy signature /path/to/fgfr2_locus.fa \
     •   tumorA_signatures.vcf (the simulated VCF)
     •   Mutation counts and summary files.
 
+---
+
+#### Applying Signatures with Bundled Data (API/GUI Functionality)
+
+BaseBuddy also includes an internal capability to apply mutational signatures directly to FASTA files using bundled canonical signature definitions. This is primarily accessed via its Python API (e.g., for GUI operations) and allows for more direct control over the mutation process.
+
+*   **Bundled Signatures**: BaseBuddy aims to pre-package a set of canonical COSMIC v3.3 signatures (GRCh37 context) for Single Base Substitutions (SBS), Doublet Base Substitutions (DBS), and Insertions/Deletions (ID). This means you do not need to download these specific signature sets from external sources like Synapse or COSMIC for this functionality when using these specific internal tools. For example, "SBS1", "SBS5" are available. *(The actual set of fully bundled master signature files like `sbs_grch37_cosmic_v3.3.tsv` is progressively being added to `src/basebuddy/data/signatures/`.)*
+*   **Functionality**: This feature (e.g., via the `apply_signature_to_fasta` API function) allows you to take an input FASTA file, select one of these bundled signatures (or provide a path to a custom signature matrix in a compatible TSV format), specify the number of mutations, and generate a new FASTA file with the applied mutations.
+*   *(Note: CLI commands for this specific internal signature application pathway will be detailed once available.)*
+
+---
+
 ⸻
 
 3.5. Strand‐Bias Introduction
@@ -273,8 +285,3 @@ The path /Users/… is not shared from the host. You can configure shared paths 
     1.  Open Docker Desktop → Preferences → Resources → File Sharing.
     2.  Add /Users/lauferva/Desktop/Professional/Projects/2025/GOAL/BaseBuddy (or parent) to the list.
     3.  Save & restart Docker.
-
-
-
-
-
