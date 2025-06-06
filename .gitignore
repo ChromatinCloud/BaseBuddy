@@ -173,3 +173,19 @@ tmp/
 .results_sig/
 
 ./refs/*
+
+
+# Ignore all contents of the 'data' directory initially
+/data/*
+
+# BUT, do NOT ignore the 'SP_Signatures_in_Samples' subdirectory.
+# This makes an exception for the directory itself.
+!/data/SP_Signatures_in_Samples/
+
+# Now, ignore all the files INSIDE that subdirectory...
+/data/SP_Signatures_in_Samples/*
+
+# ...EXCEPT for the three files you want to keep.
+!/data/SP_Signatures_in_Samples/PCAWG_sigProfiler_DBS_signatures_in_samples.csv
+!/data/SP_Signatures_in_Samples/PCAWG_SigProfiler_ID_signatures_in_samples.csv
+!/data/SP_Signatures_in_Samples/PCAWG_sigProfiler_SBS_signatures_in_samples.csv
