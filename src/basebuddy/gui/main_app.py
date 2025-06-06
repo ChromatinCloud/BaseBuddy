@@ -9,10 +9,10 @@ import socket # For IGV communication
 import re # For basic range validation
 
 # Assuming runner and utils are accessible via PYTHONPATH
-from src.basebuddy import runner as src_bb_runner
+from basebuddy import runner as src_bb_runner # Updated import
 # Ensure signature_utils is imported if apply_signature_to_fasta needs it for path resolution
-from src.basebuddy import signature_utils as sig_utils
-from bb_utils import BaseBuddyInputError, BaseBuddyToolError, BaseBuddyFileError, BaseBuddyConfigError
+from basebuddy import signature_utils as sig_utils # Updated import
+from basebuddy.utils import BaseBuddyInputError, BaseBuddyToolError, BaseBuddyFileError, BaseBuddyConfigError # Updated import
 
 # Hardcoded for now, ideally from a shared config or bb_runners
 KNOWN_ART_PROFILES = {
