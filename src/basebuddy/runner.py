@@ -10,7 +10,7 @@ import os # For os.fsencode if needed with tempfile paths, though str(Path) is u
 import traceback # For detailed error logging
 import pysam # For FastaFile in apply_signature_to_fasta
 
-import bb_utils
+from basebuddy import utils as bb_utils
 # Assuming signature_utils is in the same directory or PYTHONPATH is set up
 # For relative import if runner.py and signature_utils.py are in src/basebuddy/
 from . import signature_utils as sig_utils
