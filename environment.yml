@@ -11,3 +11,5 @@ dependencies:
   - samtools
   - pysam
   - pip
+  - pip:
+    - customtkinter

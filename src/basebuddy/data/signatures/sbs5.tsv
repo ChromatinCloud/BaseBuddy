@@ -1,0 +1,9 @@
+MutationType	SBS5
+A[C>A]A	0.005
+A[C>A]C	0.003
+A[C>A]G	0.002
+A[C>A]T	0.004
+C[C>A]A	0.004
+C[C>A]C	0.002
+T[C>T]G	0.08
+T[C>T]T	0.12

@@ -1,0 +1,9 @@
+MutationType	SBS1
+A[C>A]A	0.012
+A[C>A]C	0.008
+A[C>A]G	0.003
+A[C>A]T	0.007
+C[C>A]A	0.010
+C[C>A]C	0.005
+T[C>T]G	0.15
+T[C>T]T	0.10
