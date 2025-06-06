@@ -11,6 +11,7 @@ import datetime
 from pathlib import Path
 from typing import List, Union, Optional, Tuple, Dict, Any
 from xml.etree.ElementTree import Element, SubElement, ElementTree, indent # For IGV XML
+import pysam # For FASTA manipulation
 
 # --- Logger Setup ---
 logger = logging.getLogger(__name__)
@@ -394,3 +395,179 @@ def generate_igv_session_xml(
     except IOError as e:
         logger.error(f"Failed to write IGV session file {session_file_path}: {e}")
         raise BaseBuddyFileError(f"Could not write IGV session file to {session_file_path}", details=str(e))
+
+
+# --- FASTA Manipulation ---
+def apply_variants_to_fasta(
+    original_fasta_path: Path,
+    variants_list: List[Dict[str, Any]],
+    output_mutated_fasta_path: Path
+) -> None:
+    """
+    Applies a list of SNV variants to a FASTA file and writes a new FASTA file.
+    Assumes variants are 1-based. Converts to 0-based for sequence manipulation.
+    Currently handles only SNVs (single nucleotide variants where ref and alt are single bases).
+    """
+    ensure_file_exists(original_fasta_path, "Original FASTA for mutation")
+    logger.info(f"Applying {len(variants_list)} variants from list to {original_fasta_path}, outputting to {output_mutated_fasta_path}")
+
+    variants_by_chrom: Dict[str, List[Dict[str, Any]]] = {}
+    for var in variants_list:
+        chrom = var.get("chromosome")
+        if not chrom:
+            logger.warning(f"Skipping variant with missing chromosome: {var}")
+            continue
+        if chrom not in variants_by_chrom:
+            variants_by_chrom[chrom] = []
+        variants_by_chrom[chrom].append(var)
+
+    # Sort variants by position for each chromosome (ascending)
+    for chrom in variants_by_chrom:
+        variants_by_chrom[chrom].sort(key=lambda v: v.get("position", 0))
+
+    try:
+        with pysam.FastaFile(str(original_fasta_path)) as fasta_in, \
+             open(output_mutated_fasta_path, 'w') as fasta_out:
+
+            processed_chroms_with_variants = set()
+
+            for chrom_name in fasta_in.references:
+                original_sequence = fasta_in.fetch(chrom_name)
+
+                if chrom_name not in variants_by_chrom:
+                    # No variants for this chromosome, write original sequence
+                    fasta_out.write(f">{chrom_name}\n{original_sequence}\n")
+                    continue
+
+                logger.debug(f"Processing chromosome {chrom_name} for mutations.")
+                seq_list = list(original_sequence)
+                num_applied_on_chrom = 0
+
+                for variant in variants_by_chrom[chrom_name]:
+                    pos_1_based = variant.get("position")
+                    ref_allele = variant.get("ref_allele")
+                    alt_allele = variant.get("alt_allele")
+
+                    if not all([pos_1_based, ref_allele, alt_allele]):
+                        logger.warning(f"Skipping incomplete variant on {chrom_name}: {variant}")
+                        continue
+
+                    # Basic SNV check (single base ref and alt)
+                    if not (len(ref_allele) == 1 and len(alt_allele) == 1):
+                        logger.warning(f"Skipping non-SNV variant on {chrom_name} at pos {pos_1_based}: Ref '{ref_allele}', Alt '{alt_allele}'. Only SNVs are currently supported by apply_variants_to_fasta.")
+                        continue
+
+                    pos_0_based = int(pos_1_based) - 1
+
+                    if 0 <= pos_0_based < len(seq_list):
+                        actual_ref_at_pos = seq_list[pos_0_based]
+                        if actual_ref_at_pos.upper() != ref_allele.upper():
+                            logger.warning(
+                                f"Reference mismatch on {chrom_name} at 1-based position {pos_1_based}. "
+                                f"Expected FASTA ref: '{ref_allele}', Actual FASTA ref: '{actual_ref_at_pos}'. "
+                                f"Proceeding with substitution using alt allele '{alt_allele}'."
+                            )
+
+                        seq_list[pos_0_based] = alt_allele
+                        num_applied_on_chrom +=1
+                    else:
+                        logger.warning(
+                            f"Variant position {pos_1_based} on chromosome {chrom_name} is out of bounds "
+                            f"(sequence length {len(seq_list)}). Skipping variant."
+                        )
+
+                fasta_out.write(f">{chrom_name}\n{''.join(seq_list)}\n")
+                processed_chroms_with_variants.add(chrom_name)
+                if num_applied_on_chrom > 0:
+                    logger.info(f"Applied {num_applied_on_chrom} SNV(s) to chromosome {chrom_name}.")
+
+            # Check if any variants were for chromosomes not in the FASTA
+            for chrom_name in variants_by_chrom:
+                if chrom_name not in fasta_in.references and chrom_name not in processed_chroms_with_variants : # fasta_in.references might be empty if file is bad
+                     logger.warning(f"Chromosome '{chrom_name}' specified in variants list was not found in the reference FASTA file '{original_fasta_path}'.")
+
+
+    except FileNotFoundError:
+        raise BaseBuddyFileError(f"Original FASTA file not found at {original_fasta_path}")
+    except (IOError, ValueError) as e: # ValueError for pysam issues like bad fasta
+        logger.error(f"Error during FASTA processing or writing mutated FASTA: {e}")
+        raise BaseBuddyFileError(f"Error processing FASTA file {original_fasta_path} or writing to {output_mutated_fasta_path}. Details: {e}")
+    except Exception as e: # Catch-all for unexpected pysam errors or other issues
+        logger.exception(f"An unexpected error occurred in apply_variants_to_fasta: {e}")
+        raise BaseBuddyError(f"An unexpected error occurred while applying variants to FASTA. Details: {e}")
+
+    logger.info(f"Finished applying variants. Mutated FASTA written to {output_mutated_fasta_path}")
+
+
+def extract_ranges_to_fasta(
+    source_fasta_path: Path,
+    ranges_list: List[str], # List of strings like "chr1:1000-2000"
+    output_subset_fasta_path: Path,
+    samtools_path: Optional[str] = None # Optional: if not provided, will try to find it
+) -> None:
+    """
+    Extracts specified genomic ranges from a source FASTA file and writes them
+    to a new FASTA file using `samtools faidx`.
+    """
+    ensure_file_exists(source_fasta_path, "Source FASTA for range extraction")
+    if not ranges_list:
+        raise BaseBuddyInputError("Genomic ranges list cannot be empty for extraction.")
+
+    if not samtools_path:
+        samtools_path = find_tool_path("samtools")
+
+    # Ensure the source FASTA is indexed. faidx requires it.
+    # check_fasta_indexed will raise an error if it can't index or find the index.
+    check_fasta_indexed(source_fasta_path, samtools_path, auto_index_if_missing=True)
+
+    cmd = [samtools_path, "faidx", str(source_fasta_path)] + ranges_list
+    cmd_str = " ".join(cmd)
+    logger.info(f"Extracting ranges using command: {cmd_str} > {output_subset_fasta_path}")
+
+    try:
+        with open(output_subset_fasta_path, 'w') as outfile_handle:
+            # Using subprocess.run directly to redirect stdout to a file.
+            # `run_external_cmd` is more for capturing output as strings or streaming to logs.
+            process = subprocess.run(
+                cmd,
+                stdout=outfile_handle,
+                stderr=subprocess.PIPE, # Capture stderr to check for errors
+                text=True,
+                check=False # We will check returncode manually
+            )
+            if process.returncode != 0:
+                stderr_output = process.stderr.strip()
+                logger.error(f"'samtools faidx' command failed with exit code {process.returncode}. Stderr: {stderr_output}")
+                # Attempt to remove potentially incomplete output file
+                try:
+                    output_subset_fasta_path.unlink(missing_ok=True)
+                except OSError:
+                    logger.warning(f"Could not remove incomplete subset FASTA file: {output_subset_fasta_path}")
+                raise BaseBuddyToolError(
+                    message=f"'samtools faidx' for range extraction failed.",
+                    command=cmd,
+                    return_code=process.returncode,
+                    stderr=stderr_output
+                )
+
+        # Verify that the output file was created and is not empty
+        if not output_subset_fasta_path.exists() or output_subset_fasta_path.stat().st_size == 0:
+            # This might happen if samtools faidx ran but produced no output for valid (but empty) regions,
+            # or if regions were invalid but samtools didn't error in a way caught above.
+            stderr_msg_if_any = process.stderr.strip() if process.returncode !=0 else "No specific error from samtools, but output is empty."
+            logger.warning(f"Subset FASTA file {output_subset_fasta_path} is empty or was not created after 'samtools faidx'. Samtools stderr (if any): '{stderr_msg_if_any}'")
+            # Decide if this is an error or just a warning. For now, a warning, but could be an error.
+            # If it should be an error:
+            # raise BaseBuddyFileError(f"Output subset FASTA {output_subset_fasta_path} is empty or missing after successful samtools faidx command. Ranges might have been invalid or produced no sequence.")
+
+        logger.info(f"Subset FASTA with specified ranges written to {output_subset_fasta_path}")
+
+    except FileNotFoundError: # For samtools_path itself, though find_tool_path should catch this.
+        logger.error(f"Command not found: {samtools_path}. Is samtools installed and in PATH?")
+        raise BaseBuddyConfigError(f"The command '{samtools_path}' was not found. Ensure it is installed and in your PATH.")
+    except subprocess.TimeoutExpired: # Should not happen with default run() unless timeout is added
+        logger.error(f"samtools faidx command timed out: {cmd_str}")
+        raise BaseBuddyToolError(f"samtools faidx command timed out.", command=cmd)
+    except Exception as e:
+        logger.exception(f"An unexpected error occurred while extracting ranges with samtools faidx: {e}")
+        raise BaseBuddyError(f"An unexpected error occurred during FASTA range extraction. Details: {e}")

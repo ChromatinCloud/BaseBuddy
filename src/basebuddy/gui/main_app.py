@@ -3,12 +3,15 @@ import tkinter.filedialog
 from pathlib import Path
 import threading
 import queue # For thread communication
-from typing import Dict, Any, Optional, Callable
+from typing import Dict, Any, Optional, Callable, List # Added List
 import copy # For deepcopying params for runners
 import socket # For IGV communication
+import re # For basic range validation
 
 # Assuming runner and utils are accessible via PYTHONPATH
 from src.basebuddy import runner as src_bb_runner
+# Ensure signature_utils is imported if apply_signature_to_fasta needs it for path resolution
+from src.basebuddy import signature_utils as sig_utils
 from bb_utils import BaseBuddyInputError, BaseBuddyToolError, BaseBuddyFileError, BaseBuddyConfigError
 
 # Hardcoded for now, ideally from a shared config or bb_runners
@@ -20,6 +23,7 @@ KNOWN_NANOSIM_MODELS = [
     "dna_r9.4.1_e8.1", "dna_r10.3_e8.2", "rna_r9.4.1_e8.1_cdna", "rna_r9.4.1_e8.1_native", "GRCh38_wg_R9_guppy4"
 ]
 DEFAULT_NANOSIM_MODEL = "dna_r9.4.1_e8.1"
+BUNDLED_SIG_IDS = ["SBS1", "SBS5", "Custom Path..."] # Added "Custom Path..."
 
 
 class BaseBuddyGUI(customtkinter.CTk):
@@ -27,7 +31,7 @@ class BaseBuddyGUI(customtkinter.CTk):
         super().__init__()
 
         self.title("BaseBuddy GUI")
-        self.geometry("800x800")
+        self.geometry("800x850") # Increased height slightly for new tab
 
         customtkinter.set_appearance_mode("System")
         customtkinter.set_default_color_theme("blue")
@@ -38,6 +42,7 @@ class BaseBuddyGUI(customtkinter.CTk):
         self.short_read_tab = self.tab_view.add("Short Read Sim")
         self.spike_tab = self.tab_view.add("Variant Spiking")
         self.long_read_tab = self.tab_view.add("Long Read Sim")
+        self.apply_sig_tab = self.tab_view.add("Apply Signature") # New Tab
 
         self.thread_queue = queue.Queue()
         self.spike_variants_results: Optional[Dict[str, Any]] = None
@@ -50,6 +55,7 @@ class BaseBuddyGUI(customtkinter.CTk):
         self.create_short_read_tab()
         self.create_spike_variants_tab()
         self.create_long_read_tab()
+        self.create_apply_signature_tab() # Create the new tab
 
         self.poll_thread()
 
@@ -78,10 +84,18 @@ class BaseBuddyGUI(customtkinter.CTk):
                 output_dir = result_dict.get("output_directory", "N/A")
                 msg = f"Run '{run_name}' completed {'successfully' if success else 'with issues'}.\n"
                 msg += f"Output Directory: {output_dir}\n"
-                if result_dict.get("output_files"):
+
+                if "output_files" in result_dict and result_dict["output_files"]: # Check if list is not empty
                     msg += "Output Files:\n"
                     for f_info in result_dict["output_files"]:
                         msg += f"  - {f_info['name']} ({f_info['type']}): {f_info['path']}\n"
+
+                # Specific outputs for apply_signature_to_fasta
+                if "output_modified_fasta_path" in result_dict:
+                    msg += f"Mutated FASTA: {result_dict['output_modified_fasta_path']}\n"
+                if result_dict.get("num_mutations_applied") is not None:
+                     msg += f"Mutations Applied: {result_dict['num_mutations_applied']}\n"
+
                 if "manifest_path" in result_dict: msg += f"Manifest: {result_dict['manifest_path']}\n"
                 if "output_bam" in result_dict: msg += f"Output BAM: {result_dict['output_bam']}\n"
                 if result_dict.get("output_bam_index"): msg += f"Output BAI: {result_dict['output_bam_index']}\n"
@@ -96,27 +110,31 @@ class BaseBuddyGUI(customtkinter.CTk):
             elif message_type == "info":
                 self.update_status(data, is_error=False, clear_first=False)
 
-            # Re-enable the specific button that was disabled for the run
             if button_to_enable:
                 button_to_enable.configure(state="normal")
-                # Also re-enable other run buttons if no other thread is running (simplification: always re-enable)
                 self._re_enable_all_run_buttons(except_button=button_to_enable)
-
 
         except queue.Empty:
             pass
         finally:
             self.after(100, self.poll_thread)
 
-    def _create_path_entry(self, parent, label_text, row, dialog_func, is_file=True):
+    def _create_path_entry(self, parent, label_text, row, dialog_func, is_file=True, entry_var=None): # Added entry_var
         customtkinter.CTkLabel(master=parent, text=label_text).grid(row=row, column=0, padx=10, pady=5, sticky="w")
-        entry = customtkinter.CTkEntry(master=parent, width=350)
-        entry.grid(row=row, column=1, padx=10, pady=5, sticky="ew")
+        # Use entry_var if provided, otherwise create a new one
+        entry_widget = customtkinter.CTkEntry(master=parent, width=350, textvariable=entry_var)
+        entry_widget.grid(row=row, column=1, padx=10, pady=5, sticky="ew")
+
         def browse_callback():
             path = tkinter.filedialog.askopenfilename() if is_file else tkinter.filedialog.askdirectory()
-            if path: entry.delete(0, "end"); entry.insert(0, path)
+            if path:
+                if entry_var:
+                    entry_var.set(path)
+                else:
+                    entry_widget.delete(0, "end"); entry_widget.insert(0, path)
+
         customtkinter.CTkButton(master=parent, text="Browse", width=80, command=browse_callback).grid(row=row, column=2, padx=5, pady=5)
-        return entry
+        return entry_widget # Return the widget itself if no var passed, or if needed
 
     def create_short_read_tab(self):
         tab = self.short_read_tab
@@ -143,6 +161,13 @@ class BaseBuddyGUI(customtkinter.CTk):
         customtkinter.CTkLabel(master=tab, text="Depth:").grid(row=row_idx, column=0, padx=10, pady=5, sticky="w"); self.sr_depth_entry = customtkinter.CTkEntry(master=tab); self.sr_depth_entry.insert(0, "50"); self.sr_depth_entry.grid(row=row_idx, column=1, sticky="ew", columnspan=2, padx=10, pady=5); row_idx+=1
         customtkinter.CTkLabel(master=tab, text="Mean Fragment:").grid(row=row_idx, column=0, padx=10, pady=5, sticky="w"); self.sr_mean_frag_entry = customtkinter.CTkEntry(master=tab); self.sr_mean_frag_entry.insert(0, "400"); self.sr_mean_frag_entry.grid(row=row_idx, column=1, sticky="ew", columnspan=2, padx=10, pady=5); row_idx+=1
         customtkinter.CTkLabel(master=tab, text="Std Dev Fragment:").grid(row=row_idx, column=0, padx=10, pady=5, sticky="w"); self.sr_std_dev_frag_entry = customtkinter.CTkEntry(master=tab); self.sr_std_dev_frag_entry.insert(0, "50"); self.sr_std_dev_frag_entry.grid(row=row_idx, column=1, sticky="ew", columnspan=2, padx=10, pady=5); row_idx+=1
+
+        customtkinter.CTkLabel(master=tab, text="Genomic Ranges (optional, e.g., chr1:1k-2k):").grid(row=row_idx, column=0, padx=10, pady=5, sticky="w")
+        self.short_sim_ranges_textbox = customtkinter.CTkTextbox(master=tab, height=80, wrap="word")
+        self.short_sim_ranges_textbox.grid(row=row_idx, column=1, padx=10, pady=5, sticky="ew", columnspan=2)
+        self.short_sim_ranges_textbox.insert("1.0", "chr1:1000-2000\nchrM:1-16569") # Example placeholder
+        row_idx += 1
+
         customtkinter.CTkLabel(master=tab, text="Timeout (s):").grid(row=row_idx, column=0, padx=10, pady=5, sticky="w"); self.sr_timeout_entry = customtkinter.CTkEntry(master=tab); self.sr_timeout_entry.insert(0, "3600.0"); self.sr_timeout_entry.grid(row=row_idx, column=1, sticky="ew", columnspan=2, padx=10, pady=5); row_idx+=1
 
         self.sr_single_end_var = customtkinter.BooleanVar(value=False)
@@ -166,11 +191,32 @@ class BaseBuddyGUI(customtkinter.CTk):
 
     def _get_short_sim_params(self) -> Dict[str, Any]:
         ref_fasta = self.sr_ref_fasta_entry.get(); output_root = self.sr_output_root_entry.get()
-        if not ref_fasta: raise ValueError("Reference FASTA path is required.")
-        if not output_root: raise ValueError("Output root directory is required.")
+        if not ref_fasta:
+            self.update_status("Reference FASTA path is required.", is_error=True, clear_first=True)
+            raise ValueError("Reference FASTA path is required.")
+        if not output_root:
+            self.update_status("Output root directory is required.", is_error=True, clear_first=True)
+            raise ValueError("Output root directory is required.")
         run_name_str = self.sr_run_name_entry.get() or None
 
-        command_params_for_runner = {
+        # Parse genomic ranges from textbox
+        ranges_text = self.short_sim_ranges_textbox.get("1.0", "end-1c").strip()
+        parsed_genomic_ranges = None
+        if ranges_text:
+            parsed_genomic_ranges = [line.strip() for line in ranges_text.splitlines() if line.strip()]
+            if not parsed_genomic_ranges: # All lines were whitespace
+                parsed_genomic_ranges = None
+            else:
+                # Basic validation for format (example: chr:start-end)
+                range_pattern = re.compile(r"^[\w.-]+:\d+-\d+$")
+                for r_str in parsed_genomic_ranges:
+                    if not range_pattern.fullmatch(r_str):
+                        msg = f"Malformed genomic range: '{r_str}'. Expected format like 'chr1:1000-2000'."
+                        self.update_status(msg, is_error=True, clear_first=True)
+                        raise ValueError(msg)
+                self.update_status(f"Parsed {len(parsed_genomic_ranges)} genomic ranges.", clear_first=True)
+
+        command_params_for_manifest = {
             "id_prefix": "gui_sim_reads", "no_aln_output": False,
             "reference_fasta": ref_fasta, "depth": int(self.sr_depth_entry.get()),
             "read_length": int(self.sr_read_length_entry.get()), "art_profile": self.sr_art_profile_var.get(),
@@ -180,11 +226,12 @@ class BaseBuddyGUI(customtkinter.CTk):
             "art_platform": self.sr_art_platform_var.get(),
             "overwrite_output": self.sr_overwrite_var.get(),
             "output_root_dir": output_root, "run_name": run_name_str,
-            "auto_index_fasta": self.sr_auto_index_var.get()
+            "auto_index_fasta": self.sr_auto_index_var.get(),
+            "genomic_ranges_from_gui": parsed_genomic_ranges # For manifest
         }
         return {
             "output_root_dir": Path(output_root), "run_name": run_name_str,
-            "command_params": command_params_for_runner, "reference_fasta": ref_fasta,
+            "command_params": command_params_for_manifest, "reference_fasta": ref_fasta,
             "depth": int(self.sr_depth_entry.get()), "read_length": int(self.sr_read_length_entry.get()),
             "art_profile": self.sr_art_profile_var.get(),
             "mean_fragment_length": int(self.sr_mean_frag_entry.get()),
@@ -193,7 +240,9 @@ class BaseBuddyGUI(customtkinter.CTk):
             "overwrite_output": self.sr_overwrite_var.get(),
             "art_platform": self.sr_art_platform_var.get(),
             "timeout": float(self.sr_timeout_entry.get()),
-            "auto_index_fasta": self.sr_auto_index_var.get()
+            "auto_index_fasta": self.sr_auto_index_var.get(),
+            "variants_list": None, # Not implemented in this tab's GUI yet
+            "genomic_ranges": parsed_genomic_ranges
         }
 
     def _handle_short_sim_results(self, result_dict: Dict[str, Any]):
@@ -208,8 +257,13 @@ class BaseBuddyGUI(customtkinter.CTk):
         row_idx += 1
         self.sv_input_bam_entry = self._create_path_entry(tab, "Input BAM:", row_idx, tkinter.filedialog.askopenfilename)
         row_idx += 1
-        self.sv_vcf_entry = self._create_path_entry(tab, "Input VCF:", row_idx, tkinter.filedialog.askopenfilename)
+
+        customtkinter.CTkLabel(master=tab, text="Variants to Spike (chr pos ref alt):").grid(row=row_idx, column=0, padx=10, pady=5, sticky="w")
+        self.spike_variants_textbox = customtkinter.CTkTextbox(master=tab, height=100, wrap="word")
+        self.spike_variants_textbox.grid(row=row_idx, column=1, padx=10, pady=5, sticky="ew", columnspan=2)
+        self.spike_variants_textbox.insert("1.0", "chr1 12345 A T\nchr2 67890 C G") # Example placeholder
         row_idx += 1
+
         self.sv_output_root_entry = self._create_path_entry(tab, "Output Root Dir:", row_idx, tkinter.filedialog.askdirectory, is_file=False)
         row_idx += 1
 
@@ -246,28 +300,74 @@ class BaseBuddyGUI(customtkinter.CTk):
             result_handler_func=self._handle_spike_results
         )
 
-    def _get_spike_variants_params(self) -> Dict[str, Any]:
-        ref_fasta = self.sv_ref_fasta_entry.get(); input_bam = self.sv_input_bam_entry.get()
-        vcf_file = self.sv_vcf_entry.get(); output_root = self.sv_output_root_entry.get()
-        if not all([ref_fasta, input_bam, vcf_file, output_root]): raise ValueError("All path inputs are required.")
+    def _get_spike_variants_params(self) -> Optional[Dict[str, Any]]:
+        ref_fasta = self.sv_ref_fasta_entry.get()
+        input_bam_str = self.sv_input_bam_entry.get() # Assuming single BAM input for now from GUI
+        output_root = self.sv_output_root_entry.get()
+
+        if not all([ref_fasta, input_bam_str, output_root]):
+            self.update_status("Reference FASTA, Input BAM, and Output Root Dir are required.", is_error=True, clear_first=True)
+            return None
+
         output_bam_prefix = self.sv_output_prefix_entry.get()
-        if not output_bam_prefix: raise ValueError("Output BAM prefix is required.")
+        if not output_bam_prefix:
+            self.update_status("Output BAM prefix is required.", is_error=True, clear_first=True)
+            return None
+
         run_name_str = self.sv_run_name_entry.get() or None
 
-        command_params_for_runner = {
-            "reference_fasta": ref_fasta, "input_bam": input_bam, "vcf_file": vcf_file,
-            "output_bam_prefix_rel": output_bam_prefix, "overwrite_output": self.sv_overwrite_var.get(),
+        variants_text = self.spike_variants_textbox.get("1.0", "end-1c").strip()
+        parsed_variants_list = []
+        if not variants_text:
+            self.update_status("No variants provided in the textbox.", is_error=True, clear_first=True)
+            return None
+
+        lines = variants_text.splitlines()
+        for i, line in enumerate(lines):
+            line = line.strip()
+            if not line: continue
+            parts = line.split()
+            if len(parts) != 4:
+                self.update_status(f"Error parsing variant line {i+1}: '{line}'. Expected 4 components (chr pos ref alt).", is_error=True, clear_first=True)
+                return None
+            chrom, pos_str, ref, alt = parts
+            if not pos_str.isdigit():
+                self.update_status(f"Error parsing variant line {i+1}: Position '{pos_str}' is not an integer.", is_error=True, clear_first=True)
+                return None
+            parsed_variants_list.append({
+                "chromosome": chrom, "position": int(pos_str),
+                "ref_allele": ref, "alt_allele": alt
+            })
+
+        if not parsed_variants_list:
+            self.update_status("No valid variants parsed from the textbox.", is_error=True, clear_first=True)
+            return None
+
+        self.update_status(f"Parsed {len(parsed_variants_list)} variants from input.", clear_first=True)
+
+        vaf_val = 0.5
+        seed_val = 0
+
+        command_params_for_manifest = {
+            "reference_fasta": ref_fasta,
+            "input_bams_gui": [input_bam_str],
+            "num_variants_from_gui": len(parsed_variants_list),
+            "output_prefix_for_bam": output_bam_prefix,
+            "overwrite_output": self.sv_overwrite_var.get(),
             "auto_index_input_bam": self.sv_auto_index_input_bam_var.get(),
             "auto_index_fasta": self.sv_auto_index_fasta_var.get(),
             "timeout": float(self.sv_timeout_entry.get()),
             "output_root_dir": output_root, "run_name": run_name_str,
-            "vaf": 0.5, "seed": 0
+            "vaf": vaf_val, "seed": seed_val
         }
+
         return {
             "output_root_dir": Path(output_root), "run_name": run_name_str,
-            "command_params": command_params_for_runner, "reference_fasta": ref_fasta,
-            "input_bam": input_bam, "vcf_file": vcf_file,
-            "output_bam_prefix_rel": output_bam_prefix,
+            "command_params": command_params_for_manifest,
+            "reference_fasta": ref_fasta,
+            "input_bams": [input_bam_str],
+            "variants_list": parsed_variants_list,
+            "output_prefix_for_bam": output_bam_prefix,
             "overwrite_output": self.sv_overwrite_var.get(),
             "auto_index_input_bam": self.sv_auto_index_input_bam_var.get(),
             "auto_index_fasta": self.sv_auto_index_fasta_var.get(),
@@ -359,8 +459,6 @@ class BaseBuddyGUI(customtkinter.CTk):
             "reference_fasta": ref_fasta, "depth": depth_val, "model": model_val,
             "overwrite_output": overwrite_val, "auto_index_fasta": auto_index_val,
             "timeout": timeout_val, "output_root_dir": output_root, "run_name": run_name_str,
-            # NanoSim does not use id_prefix in the same way ART does for output files.
-            # Other params like num_reads could be added here if GUI supports them.
         }
         return {
             "output_root_dir": Path(output_root), "run_name": run_name_str,
@@ -368,6 +466,7 @@ class BaseBuddyGUI(customtkinter.CTk):
             "depth": depth_val, "model": model_val,
             "overwrite_output": overwrite_val, "auto_index_fasta": auto_index_val,
             "timeout": timeout_val
+            # variants_list and genomic_ranges will be passed as None by default by _execute_runner if not in dict
         }
 
     def _start_runner_thread(self, button_to_disable: customtkinter.CTkButton, runner_func: Callable,
@@ -376,7 +475,8 @@ class BaseBuddyGUI(customtkinter.CTk):
         if hasattr(self, 'run_short_sim_button'): self.run_short_sim_button.configure(state="disabled")
         if hasattr(self, 'run_spike_button'): self.run_spike_button.configure(state="disabled")
         if hasattr(self, 'run_long_sim_button'): self.run_long_sim_button.configure(state="disabled")
-        # Ensure the current button is also set if it's somehow not in the list above
+        if hasattr(self, 'run_apply_sig_button'): self.run_apply_sig_button.configure(state="disabled")
+
         button_to_disable.configure(state="disabled")
 
 
@@ -384,10 +484,16 @@ class BaseBuddyGUI(customtkinter.CTk):
 
         try:
             runner_args = param_extractor_func()
+            if runner_args is None: # Param extractor indicated an error
+                 self._re_enable_all_run_buttons() # Re-enable all since it was a GUI-side validation
+                 # The specific button_to_disable should already be re-enabled by the error path in param_extractor or here.
+                 button_to_disable.configure(state="normal")
+                 return
+
             thread = threading.Thread(target=self._execute_runner, args=(runner_func, runner_args, button_to_disable, result_handler_func))
             thread.start()
         except ValueError as ve:
-            self.thread_queue.put(("error", str(ve), button_to_disable)) # Pass button for re-enabling
+            self.thread_queue.put(("error", str(ve), button_to_disable))
         except Exception as e:
              self.thread_queue.put(("error", f"Unexpected setup error: {str(e)}", button_to_disable))
 
@@ -397,23 +503,25 @@ class BaseBuddyGUI(customtkinter.CTk):
         if hasattr(self, 'run_short_sim_button'): buttons.append(self.run_short_sim_button)
         if hasattr(self, 'run_spike_button'): buttons.append(self.run_spike_button)
         if hasattr(self, 'run_long_sim_button'): buttons.append(self.run_long_sim_button)
+        if hasattr(self, 'run_apply_sig_button'): buttons.append(self.run_apply_sig_button)
 
-        # Re-enable the button that was specifically passed for the completed/errored thread
-        if except_button: # This logic is now in poll_thread, _execute_runner's finally is a broader catch-all
-             pass # except_button.configure(state="normal")
-
-        # Re-enable all buttons (could be simplified if poll_thread handles the specific button)
         for btn in buttons:
-            btn.configure(state="normal")
+            if btn is not except_button: # Don't re-enable the one that just finished if it's handled by poll_thread
+                btn.configure(state="normal")
 
 
     def _execute_runner(self, runner_func: Callable, runner_args: Dict[str, Any],
                         button_to_disable: customtkinter.CTkButton, result_handler_func: Optional[Callable]):
-        # This function runs in a separate thread.
-        # It should re-enable the specific button that was disabled for THIS run.
-        # The poll_thread will then pick up the message.
-        # The button_to_disable is passed to the queue message for poll_thread to handle.
         try:
+            # Ensure all expected optional args are present if runner_func expects them
+            # For example, simulate_short and simulate_long now expect variants_list and genomic_ranges
+            if runner_func == src_bb_runner.simulate_short or runner_func == src_bb_runner.simulate_long:
+                runner_args.setdefault("variants_list", None)
+                runner_args.setdefault("genomic_ranges", None)
+            elif runner_func == src_bb_runner.apply_signature_to_fasta:
+                 runner_args.setdefault("target_regions", None)
+
+
             result = runner_func(**runner_args)
             if result_handler_func:
                 result_handler_func(result)
@@ -421,9 +529,8 @@ class BaseBuddyGUI(customtkinter.CTk):
         except (BaseBuddyInputError, BaseBuddyToolError, BaseBuddyFileError, BaseBuddyConfigError, NameError) as e:
             self.thread_queue.put(("error", str(e), button_to_disable))
         except Exception as e:
-            self.thread_queue.put(("error", f"An unexpected error occurred: {str(e)}", button_to_disable))
-        # The re-enabling of the button will be handled by poll_thread based on the message.
-        # The _re_enable_all_run_buttons in _start_runner_thread's except block handles setup errors.
+            tb_str = traceback.format_exc()
+            self.thread_queue.put(("error", f"An unexpected error occurred: {str(e)}\nTraceback:\n{tb_str}", button_to_disable))
 
 
 def run_gui():
@@ -432,3 +539,5 @@ def run_gui():
 
 if __name__ == "__main__":
     run_gui()
+
+[end of src/basebuddy/gui/main_app.py]
