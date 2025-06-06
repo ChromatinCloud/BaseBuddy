@@ -3,7 +3,7 @@ from pathlib import Path
 from unittest import mock
 
 # Assuming bb_utils.py is in the same directory or accessible in PYTHONPATH
-import bb_utils
+from basebuddy import utils as bb_utils # Updated import
 import subprocess # For mocker.patch of subprocess.CompletedProcess etc. and type hints
 import logging # For mocking loggers
 
@@ -184,12 +184,12 @@ class TestManifestOperations:
         assert read_data["parameters"]["input_file"] == "/tmp/input.fa"
 
     def test_read_run_manifest_non_existent_file(self, tmp_path, mocker):
-        mock_log_warning = mocker.patch('bb_utils.logger.warning')
+        mock_log_warning = mocker.patch('basebuddy.utils.logger.warning') # Updated mock target
         assert bb_utils.read_run_manifest(tmp_path / "ghost.json") is None
         mock_log_warning.assert_called_once()
 
     def test_read_run_manifest_malformed_json(self, tmp_path, mocker):
-        mock_log_error = mocker.patch('bb_utils.logger.error')
+        mock_log_error = mocker.patch('basebuddy.utils.logger.error') # Updated mock target
         malformed_file = tmp_path / "bad.json"; malformed_file.write_text("{")
         assert bb_utils.read_run_manifest(malformed_file) is None
         mock_log_error.assert_called_once()

@@ -9,7 +9,7 @@ import traceback # For more detailed error logging in tests
 # Assuming PYTHONPATH is set to include repo root for bb_utils,
 # and src layout for basebuddy modules.
 # Or that pytest is run from repo root.
-import bb_utils # Assuming bb_utils.py is at the repo root or in PYTHONPATH
+from basebuddy import utils as bb_utils # Updated import
 from src.basebuddy import runner as bb_runner
 from src.basebuddy import signature_utils as bb_sig_utils # May not be directly used, but runner uses it
 

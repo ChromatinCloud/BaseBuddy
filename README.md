@@ -74,7 +74,7 @@ DOCKER_BUILDKIT=1 docker build --progress=plain -t basebuddy:latest .
 
     2.  Verify:
 
-docker run --rm basebuddy version
+docker run --rm basebuddy-test basebuddy version
 ## Expect: "BaseBuddy 0.1.0"
 
 
