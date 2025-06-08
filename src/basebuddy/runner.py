@@ -150,13 +150,11 @@ def simulate_short(
             art_cmd_builder.add_option("-m", str(mean_fragment_length))
             art_cmd_builder.add_option("-s", str(std_dev_fragment_length))
 
-
         art_cmd_builder.add_option("-qs", manifest_params.get("quality_shift"))
         if is_paired_end: # qs2 only if paired-end
             art_cmd_builder.add_option("-qs2", manifest_params.get("quality_shift2"))
         art_cmd_builder.add_option("-rs", manifest_params.get("random_seed"))
         art_cmd_builder.add_flag("-na", condition=manifest_params.get("no_aln_output", False))
-
 
         art_cmd_parts = art_cmd_builder.get_command_parts()
         logger.info(f"Preparing to run {art_exe_name} with command: {' '.join(art_cmd_parts)}")
@@ -1128,8 +1126,6 @@ def introduce_strand_bias(in_bam: str, out_bam: str, forward_fraction: float = 0
             logger.debug(f"Cleaning up temporary directory: {temp_dir}")
             shutil.rmtree(temp_dir)
 
-
-
 def run_germline_simulation_workflow(
     output_root_dir: Path,
     reference_fasta_path: str,
@@ -1409,4 +1405,123 @@ def run_germline_simulation_workflow(
         "final_modified_fasta_path": str(final_modified_fasta_path.resolve()) if final_modified_fasta_path else None,
         "simulated_reads_results": simulated_reads_results,
         "manifest_path": str((run_output_dir / "manifest_germline_run.json").resolve())
+    }
+
+
+def run_fastq_qc(
+    fastq_files: List[str],
+    output_dir_str: str, # This is the root for this QC run's outputs
+    run_name: Optional[str] = None,
+    command_params: Optional[Dict[str, Any]] = None, # For manifest, threads for FastQC etc.
+    overwrite_output: bool = False
+) -> Dict[str, Any]:
+
+    effective_run_name = run_name if run_name else bb_utils.generate_unique_run_name("fastq_qc_run")
+    logger.info(f"Initiating FastQC run: {effective_run_name} for {len(fastq_files)} file(s).")
+
+    if command_params is None: command_params = {}
+
+    qc_run_main_output_dir = bb_utils.prepare_run_output_dir(Path(output_dir_str), effective_run_name, overwrite_output)
+
+    manifest_params = copy.deepcopy(command_params)
+    manifest_params.update({
+        "run_name": effective_run_name,
+        "input_fastq_files": [str(Path(f).name) for f in fastq_files],
+        "num_fastq_files": len(fastq_files),
+        "output_qc_run_dir": str(qc_run_main_output_dir.resolve()),
+        "overwrite_output": overwrite_output
+    })
+
+    try:
+        # fastqc_exe_path is found here and used by Command. If just "fastqc" is passed to Command, it finds it.
+        # Using bb_utils.Command("fastqc") directly is cleaner.
+        pass # find_tool_path for "fastqc" will be implicitly called by Command("fastqc")
+    except bb_utils.BaseBuddyConfigError as e: # This try-except is likely not needed here if Command handles it
+        logger.error(f"A required tool for FastQC was not found: {e.details if hasattr(e, 'details') else str(e)}")
+        raise
+
+    qc_reports_generated = []
+    all_output_files_for_manifest: List[Dict[str,str]] = []
+
+    num_threads_for_fastqc = command_params.get("threads", 1)
+
+    for fastq_file_path_str in fastq_files:
+        fastq_path_obj = bb_utils.ensure_file_exists(fastq_file_path_str, f"Input FASTQ {fastq_file_path_str}").resolve()
+        fastq_basename = fastq_path_obj.name
+
+        logger.info(f"Running FastQC on: {fastq_basename}")
+
+        # fastqc_cmd_builder will find 'fastqc' using find_tool_path internally
+        fastqc_cmd_builder = bb_utils.Command("fastqc")
+        fastqc_cmd_builder.add_option("--outdir", str(qc_run_main_output_dir))
+        fastqc_cmd_builder.add_option("--threads", str(num_threads_for_fastqc))
+        fastqc_cmd_builder.add_option(None, str(fastq_path_obj))
+
+        try:
+            bb_utils.run_external_cmd(fastqc_cmd_builder.get_command_parts(), stream_output=True, cwd=qc_run_main_output_dir)
+
+            stripped_name = fastq_basename
+            for ext in ['.gz', '.bz2', '.txt', '.sam', '.bam', '.fastq', '.fq']:
+                if stripped_name.lower().endswith(ext):
+                    stripped_name = stripped_name[:-len(ext)]
+            for ext in ['.fastq', '.fq']:
+                 if stripped_name.lower().endswith(ext):
+                    stripped_name = stripped_name[:-len(ext)]
+
+            fastqc_output_subdir_name = stripped_name + "_fastqc"
+            report_html_path = qc_run_main_output_dir / fastqc_output_subdir_name / "fastqc_report.html"
+            report_zip_path = qc_run_main_output_dir / (stripped_name + "_fastqc.zip")
+
+            if report_html_path.exists():
+                logger.info(f"FastQC report generated: {report_html_path}")
+                relative_html_path = report_html_path.relative_to(qc_run_main_output_dir)
+                qc_reports_generated.append({
+                    "input_fastq": fastq_basename,
+                    "html_report_path": str(relative_html_path),
+                    "full_html_path": str(report_html_path.resolve())
+                })
+                all_output_files_for_manifest.append({
+                    "name": f"FastQC HTML Report for {fastq_basename}",
+                    "path": str(relative_html_path),
+                    "type": "FASTQC_HTML_REPORT"
+                })
+                if report_zip_path.exists():
+                    relative_zip_path = report_zip_path.relative_to(qc_run_main_output_dir)
+                    all_output_files_for_manifest.append({
+                        "name": f"FastQC ZIP Data for {fastq_basename}",
+                        "path": str(relative_zip_path),
+                        "type": "FASTQC_ZIP_DATA"
+                    })
+            else:
+                logger.warning(f"FastQC HTML report not found at expected path: {report_html_path}")
+                qc_reports_generated.append({
+                    "input_fastq": fastq_basename,
+                    "html_report_path": None,
+                    "error": "Report HTML not found post-execution."
+                })
+
+        except bb_utils.BaseBuddyToolError as e_tool:
+            logger.error(f"FastQC failed for {fastq_basename}: {e_tool}")
+            qc_reports_generated.append({ "input_fastq": fastq_basename, "html_report_path": None, "error": str(e_tool.details if hasattr(e_tool, 'details') else e_tool)})
+        except Exception as e_unknown:
+            logger.error(f"An unexpected error occurred processing {fastq_basename} with FastQC: {e_unknown}")
+            qc_reports_generated.append({ "input_fastq": fastq_basename, "html_report_path": None, "error": f"Unexpected error: {str(e_unknown)}"})
+
+    manifest_params["qc_reports_generated_details"] = qc_reports_generated
+    manifest_params["status_detail"] = f"FastQC processing completed for {len(fastq_files)} file(s)."
+
+    main_manifest_path = qc_run_main_output_dir / "manifest_fastqc_run.json"
+    bb_utils.write_run_manifest(
+        manifest_path=main_manifest_path,
+        run_name=effective_run_name,
+        command_name="run_fastq_qc",
+        parameters=manifest_params,
+        output_files=all_output_files_for_manifest
+    )
+
+    return {
+        "run_name": effective_run_name,
+        "output_directory": str(qc_run_main_output_dir.resolve()),
+        "qc_reports": qc_reports_generated,
+        "manifest_path": str(main_manifest_path.resolve())
     }

@@ -17,3 +17,20 @@ BaseBuddy relies on several external tools that need to be installed and availab
     *   Installation: `pip install SigProfilerSimulator`
 
 **Note:** If you are using the provided Docker image, these dependencies are already included.
+
+*   **FastQC (for read quality control):**
+    *   Installation: `conda install -c bioconda fastqc`
+    *   Website: [https://www.bioinformatics.babraham.ac.uk/projects/fastqc/](https://www.bioinformatics.babraham.ac.uk/projects/fastqc/)
+*   **Perl (required for SimuG):**
+    *   Usually pre-installed on Linux/macOS.
+    *   Installation on Conda: `conda install -c conda-forge perl`
+    *   Windows users might need to install Strawberry Perl or use WSL.
+*   **SimuG (for modifying FASTA with germline variants):**
+    *   SimuG is a Perl script and needs Perl to run.
+    *   Installation:
+        ```bash
+        git clone https://github.com/yjx1217/simuG.git
+        # Add the directory containing simuG.pl to your PATH, or call it with its full path.
+        # Example: perl /path/to/simuG/simuG.pl -h
+        ```
+    *   GitHub: [https://github.com/yjx1217/simuG](https://github.com/yjx1217/simuG)

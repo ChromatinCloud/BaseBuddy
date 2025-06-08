@@ -5,9 +5,10 @@
 BaseBuddy is a lightweight toolkit to simulate and manipulate sequencing data:
 - **Short‐read simulation** (Illumina/ART)
 - **Long‐read simulation** (Nanopore/NanoSim‐h)
-- **Spike‐in variants** (BAMSurgeon)
+- **Spike‐in variants** (SNPs and Indels via BAMSurgeon)
 - **Mutational signature simulation** (SigProfilerSimulator)
 - **Introduce strand bias** into existing BAM files
+- **Read Quality Control** (via FastQC integration)
 
 ---
 
@@ -23,6 +24,7 @@ BaseBuddy is a lightweight toolkit to simulate and manipulate sequencing data:
    3.3 [Spike‐In Variants](#spike‐in‐variants)  
    3.4 [Mutational Signature Simulation](#mutational‐signature‐simulation)  
    3.5 [Strand‐Bias Introduction](#strand‐bias‐introduction)  
+   3.6 [Read Quality Control](#read‐quality‐control)
 4. [Edge Cases & Troubleshooting](#edge‐cases‐troubleshooting)  
    4.1 [Missing Dependencies](#missing‐dependencies)  
    4.2 [Reference FASTA Issues](#reference‐fasta‐issues)  
@@ -46,6 +48,9 @@ BaseBuddy is a lightweight toolkit to simulate and manipulate sequencing data:
 Conda
 
 ## If you have mamba
+# Note: If environment.yml is missing or fails, please refer to
+# docs/dependencies.md for manual dependency installation instructions.
+# The full list includes Python packages and external CLI tools.
 mamba env create -f environment.yml
 mamba activate basebuddy
 pip install -e .
@@ -121,6 +126,24 @@ samtools faidx grch38.fa chr10:122950000-123250000 > fgfr2_locus.fa
 samtools faidx fgfr2_locus.fa
 
 Then use fgfr2_locus.fa in place of reference.
+
+---
+
+## Graphical User Interface (GUI)
+
+BaseBuddy also offers a graphical user interface (GUI) for easier access to its features, including:
+*   Short and Long Read Simulation
+*   Variant Spiking (SNPs and Indels)
+*   Germline Variant Simulation (FASTA modification + Read Simulation)
+*   Read Quality Control (FastQC)
+*   Applying Signatures to FASTA
+
+To run the GUI, ensure all dependencies (including `customtkinter`) are installed, then execute:
+```bash
+python -m src.basebuddy.gui.main_app
+```
+
+---
 
 ⸻
 
@@ -264,6 +287,32 @@ basebuddy strand-bias spiked_10pct.bam \
     •   Output:
     •   biased_10pct.bam + biased_10pct.bai.
     •   Temporary folder strandtemp/ created under the output directory, then removed.
+
+⸻
+
+3.6 Read Quality Control
+
+BaseBuddy can run FastQC on your FASTQ files to generate standard quality control reports.
+
+**Example:**
+
+To run FastQC on two FASTQ files and save reports to `./qc_results/my_qc_run/`:
+
+```bash
+basebuddy qc reads_1.fastq.gz reads_2.fastq.gz --output-dir ./qc_results --run-name my_qc_run
+```
+
+**Key Options:**
+*   `fastq_files...`: One or more input FASTQ files.
+*   `--output-dir` / `-o`: Specify the main directory where QC results will be stored. A run-specific subdirectory will be created inside this.
+*   `--run-name`: Optional name for the QC run, used for the subdirectory.
+*   `--threads` / `-t`: Number of threads FastQC should use.
+*   `--overwrite`: Overwrite the output subdirectory if it exists.
+
+**Output:**
+*   A run-specific output directory (e.g., `qc_results/my_qc_run_YYYYMMDD_HHMMSS/`).
+*   Inside this, FastQC will create its standard output structure for each input file (e.g., `reads_1_fastqc/fastqc_report.html`).
+*   A `manifest_fastqc_run.json` file summarizing the inputs and report locations.
 
 ⸻
 

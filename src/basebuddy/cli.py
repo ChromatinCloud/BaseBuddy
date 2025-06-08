@@ -301,5 +301,77 @@ def strand_bias(
         # typer.secho(traceback.format_exc(), fg=typer.colors.YELLOW, err=True) # For debugging
         raise typer.Exit(code=1)
 
+@app.command("qc")
+def qc(
+    fastq_files: List[Path] = typer.Argument(..., help="One or more FASTQ files to process."),
+    output_dir: Path = typer.Option(Path("results_qc"), "--output-dir", "-o", help="Output directory for FastQC results.", writable=True, file_okay=False, dir_okay=True),
+    run_name: Optional[str] = typer.Option(None, "--run-name", help="Optional name for this specific QC run."),
+    threads: int = typer.Option(1, "--threads", "-t", help="Number of threads for FastQC to use per file processing."),
+    overwrite: bool = typer.Option(False, "--overwrite", help="Overwrite output directory if it exists.")
+):
+    """
+    Run FastQC on one or more FASTQ files to generate quality control reports.
+    Example: basebuddy qc reads1.fastq.gz reads2.fastq.gz -o ./qc_output
+    """
+    if not fastq_files:
+        typer.secho("Error: At least one FASTQ file must be provided.", fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=1)
+
+    try:
+        output_dir.mkdir(parents=True, exist_ok=True)
+    except Exception as e:
+        typer.secho(f"Error creating output directory {output_dir}: {e}", fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=1)
+
+    fastq_file_paths_str = [str(f.resolve()) for f in fastq_files]
+
+    command_params_for_runner = {
+        "threads": threads
+    }
+
+    try:
+        results = runner.run_fastq_qc(
+            fastq_files=fastq_file_paths_str,
+            output_dir_str=str(output_dir.resolve()),
+            run_name=run_name,
+            command_params=command_params_for_runner,
+            overwrite_output=overwrite
+        )
+
+        typer.secho(f"FastQC run '{results.get('run_name')}' completed successfully.", fg=typer.colors.GREEN)
+        typer.echo(f"Output directory: {results.get('output_directory')}")
+        if results.get('manifest_path'):
+            typer.echo(f"Manifest file: {results.get('manifest_path')}")
+
+        reports = results.get("qc_reports", [])
+        if reports:
+            typer.echo("\nGenerated Reports:")
+            for report_info in reports:
+                input_fq = report_info.get('input_fastq')
+                html_path = report_info.get('full_html_path')
+                status = "OK" if html_path and Path(html_path).exists() else f"ERROR ({report_info.get('error', 'unknown')})"
+                typer.echo(f"  - {input_fq}: {html_path if html_path else 'N/A'} (Status: {status})")
+        else:
+            typer.echo("No QC reports were generated (or found). Check logs for details.")
+
+
+    except bb_utils.BaseBuddyConfigError as e:
+        typer.secho(f"Configuration Error: {e}", fg=typer.colors.RED, err=True)
+        if hasattr(e, 'details') and e.details: typer.secho(f"Details: {e.details}", fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=1)
+    except bb_utils.BaseBuddyToolError as e:
+        typer.secho(f"Tool Execution Error: {e}", fg=typer.colors.RED, err=True)
+        if hasattr(e, 'details') and e.details: typer.secho(f"Details: {e.details}", fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=1)
+    except bb_utils.BaseBuddyFileError as e:
+        typer.secho(f"File Error: {e}", fg=typer.colors.RED, err=True)
+        if hasattr(e, 'details') and e.details: typer.secho(f"Details: {e.details}", fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=1)
+    except Exception as e:
+        typer.secho(f"An unexpected error occurred: {type(e).__name__} - {e}", fg=typer.colors.RED, err=True)
+        # import traceback
+        # typer.secho(traceback.format_exc(), fg=typer.colors.YELLOW, err=True) # For debugging
+        raise typer.Exit(code=1)
+
 if __name__ == "__main__":
     app()
