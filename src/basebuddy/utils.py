@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import List, Union, Optional, Tuple, Dict, Any
 from xml.etree.ElementTree import Element, SubElement, ElementTree, indent # For IGV XML
 import pysam # For FASTA manipulation
+import typer # Added
 
 # --- Logger Setup ---
 logger = logging.getLogger(__name__)
@@ -571,3 +572,92 @@ def extract_ranges_to_fasta(
     except Exception as e:
         logger.exception(f"An unexpected error occurred while extracting ranges with samtools faidx: {e}")
         raise BaseBuddyError(f"An unexpected error occurred during FASTA range extraction. Details: {e}")
+
+
+# --- New Command Class and Typer Runner ---
+
+class Command:
+    """A helper class to build command-line commands programmatically."""
+    def __init__(self, base_command: str):
+        self.base_command_name = base_command # Store for error messages
+        # find_tool_path will raise BaseBuddyConfigError if not found.
+        # This error should be caught by the calling CLI layer and handled with Typer.
+        self.executable_path = find_tool_path(base_command)
+        self.parts = [self.executable_path]
+
+    def add_option(self, option: str, value: Any):
+        """Adds an option with a value, e.g., `-o output.txt`."""
+        if value is not None:
+            self.parts.extend([option, str(value)])
+        return self # Allow chaining
+
+    def add_flag(self, flag: str, condition: bool = True):
+        """Adds a flag if a condition is met, e.g., `--verbose`."""
+        if condition:
+            self.parts.append(flag)
+        return self # Allow chaining
+
+    def get_command_parts(self) -> List[str]:
+        """Returns the complete command as a list of strings."""
+        return self.parts
+
+    def get_command_str(self) -> str:
+        """Returns the complete command as a single string (for shell=True or display)."""
+        return " ".join(self.parts)
+
+
+def run_external_command_typer(cmd_parts: List[str], use_shell: bool = False, cwd: Optional[Union[str, Path]] = None) -> subprocess.CompletedProcess:
+    """
+    Executes an external command using subprocess.run, tailored for Typer CLI output.
+    Uses a list of command parts to avoid issues with shell=True and string formatting if not careful.
+    If use_shell is True, cmd_parts will be joined to a string.
+    """
+    if not cmd_parts:
+        typer.secho("Error: No command provided to run_external_command_typer.", fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=1)
+
+    if use_shell:
+        cmd_to_run: Union[str, List[str]] = " ".join(cmd_parts)
+    else:
+        cmd_to_run = cmd_parts
+
+    cmd_display_str = " ".join(cmd_parts) # For display purposes
+
+    typer.echo(f"Executing: {cmd_display_str}")
+    if cwd:
+        typer.echo(f"Working directory: {cwd}")
+
+    try:
+        result = subprocess.run(
+            cmd_to_run,
+            shell=use_shell, # Be cautious with shell=True if cmd_parts contains user input not properly sanitized.
+            capture_output=True,
+            text=True,
+            check=False, # We check the returncode manually
+            cwd=cwd
+        )
+
+        if result.returncode != 0:
+            typer.secho(f"Error running command: {cmd_display_str}", fg=typer.colors.RED, err=True)
+            # Log full details for debugging, but typer output might be more concise
+            logger.error(f"Command failed: {cmd_display_str}\nReturn Code: {result.returncode}\nStdout: {result.stdout}\nStderr: {result.stderr}")
+            typer.secho(f"Stderr:\n{result.stderr}", fg=typer.colors.RED, err=True) # Show stderr
+            raise typer.Exit(code=1)
+
+        if result.stdout:
+            logger.info(f"Command stdout: {result.stdout}")
+        if result.stderr: # Some tools print to stderr even on success
+            logger.info(f"Command stderr (non-error): {result.stderr}")
+
+        return result
+    except FileNotFoundError: # Should be caught by Command class, but as a safeguard if called directly
+        typer.secho(f"Error: Command not found '{cmd_parts[0]}'. Is it installed and in PATH?", fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=1)
+    except PermissionError:
+        typer.secho(f"Error: Permission denied for command '{cmd_parts[0]}'. Check execute permissions.", fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=1)
+    except Exception as e: # Catch other potential subprocess errors
+        typer.secho(f"An unexpected error occurred while trying to run command: {cmd_display_str}", fg=typer.colors.RED, err=True)
+        typer.secho(str(e), fg=typer.colors.RED, err=True)
+        logger.exception(f"Unexpected error in run_external_command_typer for command: {cmd_display_str}")
+        raise typer.Exit(code=1)

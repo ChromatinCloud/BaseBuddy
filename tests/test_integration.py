@@ -272,3 +272,151 @@ def test_spike_variants_integration(tmp_path: Path):
         pytest.warning(f"Pysam check on BAM files failed: {e}")
 
     print(f"Integration test for spike_variants passed for BAM: {input_bam_path.name}")
+
+
+# --- Spike Command Integration Tests ---
+# import subprocess # Already at top
+# from typing import Optional, List # Already at top (or should be)
+
+# TEST_FILE_DIR is already defined at the top of the file
+TEST_DATA_SPIKE_DIR = (TEST_FILE_DIR / "test_data").resolve() # Re-use or ensure consistency
+TEST_SPIKE_OUTPUT_DIR = (TEST_FILE_DIR / "test_spike_output").resolve() # Re-use or ensure consistency
+
+
+def get_picard_jar_for_test() -> Optional[str]: # This helper can be defined once
+    env_var = os.environ.get("BAMSURGEON_PICARD_JAR")
+    if env_var and Path(env_var).is_file():
+        return env_var
+    local_picard_candidate = Path(__file__).parent.parent / "picard.jar"
+    if local_picard_candidate.is_file():
+        return str(local_picard_candidate)
+    return None
+
+PICARD_JAR_PATH_FOR_TESTS = get_picard_jar_for_test() # Define once
+
+BASE_SPIKE_ARGS = [
+    "basebuddy", "spike",
+    "--reference", str(TEST_DATA_SPIKE_DIR / "spike_ref.fa"),
+    "--output-prefix", str(TEST_SPIKE_OUTPUT_DIR / "spiked_bam_test_run"),
+    "--overwrite"
+]
+if PICARD_JAR_PATH_FOR_TESTS:
+    BASE_SPIKE_ARGS.extend(["--picard-jar", PICARD_JAR_PATH_FOR_TESTS])
+
+
+@pytest.fixture(scope="module")
+def spike_test_environment(): # This fixture can be defined once
+    if not PICARD_JAR_PATH_FOR_TESTS:
+        pytest.skip("Skipping all spike tests: BAMSURGEON_PICARD_JAR not set and no local picard.jar found.")
+    if not TEST_DATA_SPIKE_DIR.exists():
+        pytest.fail(f"Test data directory not found: {TEST_DATA_SPIKE_DIR}")
+    required_files = ["spike_ref.fa", "spike_snps.vcf", "spike_indels.vcf", "qc_test_1.fastq", "qc_test_2.fastq"]
+    for req_file in required_files:
+        if not (TEST_DATA_SPIKE_DIR / req_file).exists():
+            pytest.fail(f"Required test data file not found: {TEST_DATA_SPIKE_DIR / req_file}")
+
+    input_bam = TEST_DATA_SPIKE_DIR / "spike_input.bam"
+    input_bai = TEST_DATA_SPIKE_DIR / "spike_input.bam.bai"
+    if not input_bam.exists():
+        TEST_DATA_SPIKE_DIR.mkdir(parents=True, exist_ok=True)
+        input_bam.touch()
+        print(f"WARNING: Test input BAM {input_bam} not found. Created empty placeholder. BAMSurgeon will likely fail.")
+    if not input_bai.exists() and input_bam.exists():
+        input_bai.touch()
+        print(f"WARNING: Test input BAI {input_bai} not found. Created empty placeholder.")
+
+    if TEST_SPIKE_OUTPUT_DIR.exists(): # Clean specific spike output dir
+        shutil.rmtree(TEST_SPIKE_OUTPUT_DIR)
+    TEST_SPIKE_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+    yield
+    if TEST_SPIKE_OUTPUT_DIR.exists():
+        shutil.rmtree(TEST_SPIKE_OUTPUT_DIR)
+
+def run_basebuddy_process_for_spike(args: List[str]): # Can be defined once
+    final_args = list(args)
+    has_input_bam = any(arg == "--input-bam" for arg in final_args)
+    if not has_input_bam:
+        try:
+            spike_cmd_index = final_args.index("spike")
+            final_args.insert(spike_cmd_index + 1, "--input-bam")
+            final_args.insert(spike_cmd_index + 2, str(TEST_DATA_SPIKE_DIR / "spike_input.bam"))
+        except ValueError:
+            final_args.extend(["--input-bam", str(TEST_DATA_SPIKE_DIR / "spike_input.bam")])
+    process = subprocess.run(final_args, capture_output=True, text=True)
+    if process.returncode != 0:
+        print(f"Executing: {' '.join(final_args)}\nStdout: {process.stdout}\nStderr: {process.stderr}")
+    return process
+
+# --- QC Command Integration Tests ---
+TEST_QC_OUTPUT_DIR = (TEST_FILE_DIR / "test_qc_output").resolve()
+
+@pytest.fixture(scope="module")
+def qc_test_environment():
+    if not TEST_DATA_SPIKE_DIR.exists():
+        pytest.fail(f"Test data directory not found: {TEST_DATA_SPIKE_DIR}") # QC files are there
+
+    required_qc_files = ["qc_test_1.fastq", "qc_test_2.fastq"]
+    for req_file in required_qc_files:
+        if not (TEST_DATA_SPIKE_DIR / req_file).exists():
+            pytest.fail(f"Required QC test data file not found: {TEST_DATA_SPIKE_DIR / req_file}")
+
+    if TEST_QC_OUTPUT_DIR.exists():
+        shutil.rmtree(TEST_QC_OUTPUT_DIR)
+    TEST_QC_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+    yield
+    if TEST_QC_OUTPUT_DIR.exists():
+        shutil.rmtree(TEST_QC_OUTPUT_DIR)
+
+def run_basebuddy_qc_process(args: List[str]):
+    final_args = ["basebuddy", "qc"] + args
+    process = subprocess.run(final_args, capture_output=True, text=True)
+    if process.returncode != 0:
+        print(f"Executing: {' '.join(final_args)}\nStdout: {process.stdout}\nStderr: {process.stderr}")
+    return process
+
+@pytest.mark.usefixtures("qc_test_environment")
+def test_qc_single_fastq():
+    output_subdir_name = "qc_single_file_run"
+    args = [
+        str(TEST_DATA_SPIKE_DIR / "qc_test_1.fastq"),
+        "--output-dir", str(TEST_QC_OUTPUT_DIR),
+        "--run-name", output_subdir_name,
+        "--overwrite"
+    ]
+    result = run_basebuddy_qc_process(args)
+    assert result.returncode == 0, f"basebuddy qc single file failed. Stderr: {result.stderr}"
+    expected_report_path = TEST_QC_OUTPUT_DIR / output_subdir_name / "qc_test_1_fastqc" / "fastqc_report.html"
+    assert expected_report_path.exists(), f"FastQC HTML report not found at {expected_report_path}"
+
+@pytest.mark.usefixtures("qc_test_environment")
+def test_qc_multiple_fastq():
+    output_subdir_name = "qc_multi_file_run"
+    args = [
+        str(TEST_DATA_SPIKE_DIR / "qc_test_1.fastq"),
+        str(TEST_DATA_SPIKE_DIR / "qc_test_2.fastq"),
+        "--output-dir", str(TEST_QC_OUTPUT_DIR),
+        "--run-name", output_subdir_name,
+        "--overwrite"
+    ]
+    result = run_basebuddy_qc_process(args)
+    assert result.returncode == 0, f"basebuddy qc multiple files failed. Stderr: {result.stderr}"
+    expected_report_1_path = TEST_QC_OUTPUT_DIR / output_subdir_name / "qc_test_1_fastqc" / "fastqc_report.html"
+    expected_report_2_path = TEST_QC_OUTPUT_DIR / output_subdir_name / "qc_test_2_fastqc" / "fastqc_report.html"
+    assert expected_report_1_path.exists(), f"FastQC HTML report for qc_test_1.fastq not found at {expected_report_1_path}"
+    assert expected_report_2_path.exists(), f"FastQC HTML report for qc_test_2.fastq not found at {expected_report_2_path}"
+
+@pytest.mark.usefixtures("qc_test_environment")
+def test_qc_non_existent_input():
+    args = [
+        "non_existent.fastq",
+        "--output-dir", str(TEST_QC_OUTPUT_DIR)
+    ]
+    result = run_basebuddy_qc_process(args)
+    assert result.returncode != 0, "basebuddy qc should fail for non-existent input"
+    assert "File Error" in result.stderr or "not found" in result.stderr.lower() , "Correct error message for non-existent input not found."
+
+@pytest.mark.usefixtures("qc_test_environment")
+def test_qc_no_input_files():
+    process = subprocess.run(["basebuddy", "qc", "--output-dir", str(TEST_QC_OUTPUT_DIR)], capture_output=True, text=True)
+    assert process.returncode != 0, "basebuddy qc should fail when no input FASTQ files are provided"
+    assert "Missing argument" in process.stderr or "Error: At least one FASTQ file must be provided" in process.stderr, "Correct error for missing FASTQ files not found."
