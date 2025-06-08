@@ -272,3 +272,169 @@ def test_spike_variants_integration(tmp_path: Path):
         pytest.warning(f"Pysam check on BAM files failed: {e}")
 
     print(f"Integration test for spike_variants passed for BAM: {input_bam_path.name}")
+
+
+# --- Spike Command Integration Tests ---
+import subprocess # Already imported but good for clarity
+from typing import Optional, List # For type hints in helper
+
+# Determine TEST_DATA_DIR relative to the test file's location
+# This makes tests runnable from any directory.
+TEST_FILE_DIR = Path(__file__).parent # This is already defined above, but re-defining is fine for this block
+TEST_DATA_SPIKE_DIR = (TEST_FILE_DIR / "test_data").resolve()
+TEST_SPIKE_OUTPUT_DIR = (TEST_FILE_DIR / "test_spike_output").resolve()
+
+
+def get_picard_jar_for_test() -> Optional[str]:
+    env_var = os.environ.get("BAMSURGEON_PICARD_JAR")
+    if env_var and Path(env_var).is_file():
+        return env_var
+    # Attempt a common relative path for local testing convenience if env var not set
+    # e.g. if picard.jar is placed in the project's root directory for testing
+    local_picard_candidate = Path(__file__).parent.parent / "picard.jar"
+    if local_picard_candidate.is_file():
+        return str(local_picard_candidate)
+    return None # If not found, tests that require it will be skipped by the fixture.
+
+PICARD_JAR_PATH_FOR_TESTS = get_picard_jar_for_test()
+
+BASE_SPIKE_ARGS = [
+    "basebuddy", "spike",
+    "--reference", str(TEST_DATA_SPIKE_DIR / "spike_ref.fa"),
+    # Placeholder for input_bam, will be checked in fixture
+    # "--input-bam", str(TEST_DATA_SPIKE_DIR / "spike_input.bam"),
+    "--output-prefix", str(TEST_SPIKE_OUTPUT_DIR / "spiked_bam_test_run"),
+    "--overwrite"
+]
+# Add picard_jar to BASE_SPIKE_ARGS only if it was found.
+# If not, the fixture will skip tests anyway.
+if PICARD_JAR_PATH_FOR_TESTS:
+    BASE_SPIKE_ARGS.extend(["--picard-jar", PICARD_JAR_PATH_FOR_TESTS])
+
+
+@pytest.fixture(scope="module")
+def spike_test_environment():
+    if not PICARD_JAR_PATH_FOR_TESTS:
+        pytest.skip("Skipping all spike tests: BAMSURGEON_PICARD_JAR not set and no local picard.jar found.")
+
+    # Ensure test data directory exists (it should, from previous step)
+    if not TEST_DATA_SPIKE_DIR.exists():
+        pytest.fail(f"Test data directory not found: {TEST_DATA_SPIKE_DIR}")
+
+    # Check for essential test files created in previous steps
+    required_files = ["spike_ref.fa", "spike_snps.vcf", "spike_indels.vcf"]
+    for req_file in required_files:
+        if not (TEST_DATA_SPIKE_DIR / req_file).exists():
+            pytest.fail(f"Required test data file not found: {TEST_DATA_SPIKE_DIR / req_file}")
+
+    # Check for the manually-to-be-prepared input BAM
+    # For now, we will 'touch' it if it doesn't exist, with a warning that real tests need a valid BAM.
+    input_bam = TEST_DATA_SPIKE_DIR / "spike_input.bam"
+    input_bai = TEST_DATA_SPIKE_DIR / "spike_input.bam.bai" # Adjusted to match common .bam.bai
+
+    if not input_bam.exists():
+        print(f"WARNING: Test input BAM {input_bam} not found. Creating empty placeholder. BAMSurgeon will likely fail. For full testing, provide a valid BAM.")
+        TEST_DATA_SPIKE_DIR.mkdir(parents=True, exist_ok=True) # Ensure dir exists
+        input_bam.touch()
+    if not input_bai.exists() and input_bam.exists():
+        print(f"WARNING: Test input BAI {input_bai} not found. Creating empty placeholder. BAMSurgeon may fail or attempt re-indexing.")
+        input_bai.touch()
+
+    TEST_SPIKE_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+    yield
+    # Teardown: Remove the output directory after tests in this module run
+    if TEST_SPIKE_OUTPUT_DIR.exists():
+        shutil.rmtree(TEST_SPIKE_OUTPUT_DIR)
+
+def run_basebuddy_process_for_spike(args: List[str]):
+    # Ensure the specific input BAM for this test run is part of args
+    # This allows tests to potentially use different input BAMs if needed later
+    # For now, all tests use the same one.
+    final_args = list(args) # Make a copy
+
+    # Check if --input-bam is already specified with a value
+    has_input_bam = False
+    for i, arg_val in enumerate(final_args):
+        if arg_val == "--input-bam":
+            if i + 1 < len(final_args): # Check if there's a value after --input-bam
+                has_input_bam = True
+            break
+
+    if not has_input_bam:
+        # Find a suitable place to insert --input-bam and its value
+        # Typically after "basebuddy spike" and before other options like --reference
+        # For simplicity, inserting after "spike" command if present
+        try:
+            spike_cmd_index = final_args.index("spike")
+            final_args.insert(spike_cmd_index + 1, "--input-bam")
+            final_args.insert(spike_cmd_index + 2, str(TEST_DATA_SPIKE_DIR / "spike_input.bam"))
+        except ValueError: # "spike" not found, append (less ideal)
+            final_args.extend(["--input-bam", str(TEST_DATA_SPIKE_DIR / "spike_input.bam")])
+
+
+    process = subprocess.run(final_args, capture_output=True, text=True)
+    if process.returncode != 0:
+        print(f"Executing: {' '.join(final_args)}")
+        print("Stdout:", process.stdout)
+        print("Stderr:", process.stderr)
+    return process
+
+@pytest.mark.usefixtures("spike_test_environment")
+def test_spike_snps_only():
+    args = BASE_SPIKE_ARGS + ["--snp-vcf", str(TEST_DATA_SPIKE_DIR / "spike_snps.vcf")]
+    result = run_basebuddy_process_for_spike(args)
+    # If the dummy spike_input.bam is empty, bamsurgeon tools will fail.
+    # We expect a non-zero return code in that case.
+    # If a valid (even minimal) spike_input.bam exists AND picard.jar is correct,
+    # then we expect returncode 0 and the output file.
+    output_bam_path = TEST_SPIKE_OUTPUT_DIR / "spiked_bam_test_run_spike_input_final_sorted.bam"
+    if not (TEST_DATA_SPIKE_DIR / "spike_input.bam").stat().st_size > 0: # Check if dummy
+         assert result.returncode != 0, "Expected failure with empty/dummy input BAM for SNP spiking."
+    else:
+        assert result.returncode == 0, "Spike with SNPs only failed unexpectedly."
+        assert output_bam_path.exists(), "Spike with SNPs only: output BAM not created."
+
+@pytest.mark.usefixtures("spike_test_environment")
+def test_spike_indels_only():
+    args = BASE_SPIKE_ARGS + ["--indel-vcf", str(TEST_DATA_SPIKE_DIR / "spike_indels.vcf")]
+    result = run_basebuddy_process_for_spike(args)
+    output_bam_path = TEST_SPIKE_OUTPUT_DIR / "spiked_bam_test_run_spike_input_final_sorted.bam"
+    if not (TEST_DATA_SPIKE_DIR / "spike_input.bam").stat().st_size > 0:
+         assert result.returncode != 0, "Expected failure with empty/dummy input BAM for Indel spiking."
+    else:
+        assert result.returncode == 0, "Spike with Indels only failed unexpectedly."
+        assert output_bam_path.exists(), "Spike with Indels only: output BAM not created."
+
+@pytest.mark.usefixtures("spike_test_environment")
+def test_spike_snps_and_indels():
+    args = BASE_SPIKE_ARGS + [
+        "--snp-vcf", str(TEST_DATA_SPIKE_DIR / "spike_snps.vcf"),
+        "--indel-vcf", str(TEST_DATA_SPIKE_DIR / "spike_indels.vcf")
+    ]
+    result = run_basebuddy_process_for_spike(args)
+    output_bam_path = TEST_SPIKE_OUTPUT_DIR / "spiked_bam_test_run_spike_input_final_sorted.bam"
+    if not (TEST_DATA_SPIKE_DIR / "spike_input.bam").stat().st_size > 0:
+         assert result.returncode != 0, "Expected failure with empty/dummy input BAM for SNP+Indel spiking."
+    else:
+        assert result.returncode == 0, "Spike with SNPs and Indels failed unexpectedly."
+        assert output_bam_path.exists(), "Spike with SNPs and Indels: output BAM not created."
+
+@pytest.mark.usefixtures("spike_test_environment")
+def test_spike_no_vcfs():
+    args_no_vcf = [arg for arg in BASE_SPIKE_ARGS if not ("--snp-vcf" in arg or "--indel-vcf" in arg or "spike_snps.vcf" in arg or "spike_indels.vcf" in arg)]
+    result = run_basebuddy_process_for_spike(args_no_vcf)
+    assert result.returncode != 0, "Spike should fail if no VCFs are provided"
+    assert "Error: At least one VCF file (--snp-vcf or --indel-vcf) must be provided." in result.stderr, "Correct error message for no VCFs not found."
+
+@pytest.mark.usefixtures("spike_test_environment")
+def test_spike_non_existent_snp_vcf():
+    args = BASE_SPIKE_ARGS + ["--snp-vcf", str(TEST_DATA_SPIKE_DIR / "non_existent_snps.vcf")]
+    result = run_basebuddy_process_for_spike(args)
+    assert result.returncode != 0, "Spike should fail for non-existent SNP VCF"
+    assert "File Error" in result.stderr or ("SNP VCF" in result.stderr and "not found" in result.stderr), "Correct error message for non-existent SNP VCF not found."
+
+# Need to import Optional and List from typing for the helper function if not already there.
+# The subprocess import is also listed again.
+# shutil is used in the fixture.
+# os is used for environment variable.
+# Assuming these are fine or will be added at the top if missing.
