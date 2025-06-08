@@ -1,13 +1,3 @@
-Of course. This is another merge conflict where different features were added in the same location. One branch added command-line tests for the `spike` command, and the other added tests for a new `qc` command.
-
-To resolve this, we need to merge the helper functions and then include the test functions from **both** branches.
-
-Here is the complete and final content for the `tests/test_integration.py` file with the conflict correctly resolved.
-
-***
-
-```python
-# tests/test_integration.py
 import pytest
 from pathlib import Path
 import shutil
@@ -230,7 +220,7 @@ def spike_test_environment():
         pytest.skip("Skipping all spike CLI tests: BAMSURGEON_PICARD_JAR not set and no local picard.jar found.")
     if not TEST_DATA_DIR.exists():
         pytest.fail(f"Test data directory not found: {TEST_DATA_DIR}")
-    
+
     required_files = ["spike_ref.fa", "spike_snps.vcf", "spike_indels.vcf", "spike_input.bam"]
     for req_file in required_files:
         if not (TEST_DATA_DIR / req_file).exists():
@@ -252,7 +242,7 @@ def run_basebuddy_process_for_spike(args: List[str]):
             final_args.insert(spike_cmd_index + 2, str(TEST_DATA_DIR / "spike_input.bam"))
         except ValueError:
             final_args.extend(["--input-bam", str(TEST_DATA_DIR / "spike_input.bam")])
-    
+
     process = subprocess.run(final_args, capture_output=True, text=True)
     if process.returncode != 0:
         print(f"Executing: {' '.join(final_args)}\nStdout: {process.stdout}\nStderr: {process.stderr}")
@@ -340,4 +330,4 @@ def test_qc_no_input_files():
     process = subprocess.run(["basebuddy", "qc", "--output-dir", str(TEST_QC_OUTPUT_DIR)], capture_output=True, text=True)
     assert process.returncode != 0, "basebuddy qc should fail when no input FASTQ files are provided"
     assert "Missing argument" in process.stderr or "Error: At least one FASTQ file" in process.stderr, "Correct error for missing FASTQ files not found."
-```
+   

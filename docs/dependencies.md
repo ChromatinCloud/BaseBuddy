@@ -21,10 +21,12 @@ BaseBuddy relies on several external tools that need to be installed and availab
 *   **FastQC (for read quality control):**
     *   Installation: `conda install -c bioconda fastqc`
     *   Website: [https://www.bioinformatics.babraham.ac.uk/projects/fastqc/](https://www.bioinformatics.babraham.ac.uk/projects/fastqc/)
+
 *   **Perl (required for SimuG):**
     *   Usually pre-installed on Linux/macOS.
     *   Installation on Conda: `conda install -c conda-forge perl`
     *   Windows users might need to install Strawberry Perl or use WSL.
+
 *   **SimuG (for modifying FASTA with germline variants):**
     *   SimuG is a Perl script and needs Perl to run.
     *   Installation:
