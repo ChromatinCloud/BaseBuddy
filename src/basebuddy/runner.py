@@ -1126,7 +1126,6 @@ def introduce_strand_bias(in_bam: str, out_bam: str, forward_fraction: float = 0
             logger.debug(f"Cleaning up temporary directory: {temp_dir}")
             shutil.rmtree(temp_dir)
 
-
 def run_germline_simulation_workflow(
     output_root_dir: Path,
     reference_fasta_path: str,
