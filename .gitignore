@@ -11,6 +11,7 @@
 # 1. Ignore all files and directories inside /data/ recursively.
 /data/**
 
+/instructions/
 
 # -------------------------------------------------------------------
 # Whitelist Set 1: The COSMIC and SigProfiler reference files.

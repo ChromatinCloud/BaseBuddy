@@ -1,0 +1,38 @@
+# --- Git / Version Control ---
+.git
+.gitignore
+
+# --- Python Virtual Environments ---
+.venv
+venv
+env
+
+# --- Python Cache & Compiled Files ---
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# --- IDE & Editor Configuration ---
+.vscode/
+.idea/
+*.sublime-project
+*.sublime-workspace
+.DS_Store
+
+# --- Build & Distribution Artifacts ---
+build/
+dist/
+*.egg-info
+sdist/
+wheelhouse/
+
+# --- Testing Artifacts ---
+.pytest_cache/
+.coverage
+htmlcov/
+
+# --- Documentation ---
+# You can uncomment these if you are sure they are not needed by the app itself.
+README.md
+LICENSE
