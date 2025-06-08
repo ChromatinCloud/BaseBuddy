@@ -1,0 +1,47 @@
+name: CI
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ['3.10']
+
+    steps:
+    - uses: actions/checkout@v3
+
+    - name: Set up Python ${{ matrix.python-version }}
+      uses: actions/setup-python@v3
+      with:
+        python-version: ${{ matrix.python-version }}
+
+    - name: Set up Micromamba
+      uses: mamba-org/setup-micromamba@v1
+      with:
+        environment-file: environment.yml
+        environment-name: basebuddy
+        cache-environment: true
+        post-cleanup: "all" # Ensure environment is cleaned up
+
+    - name: Install SigProfilerSimulator and perform editable install
+      shell: bash -el {0}
+      run: |
+        pip install SigProfilerSimulator
+        pip install -e .
+
+    - name: Run pytest
+      shell: bash -el {0}
+      run: |
+        pytest tests/
+
+    - name: Run smoke_test.sh
+      shell: bash -el {0}
+      run: |
+        chmod +x tests/smoke_test.sh
+        tests/smoke_test.sh

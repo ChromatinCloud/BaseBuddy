@@ -92,7 +92,12 @@ def simulate_short(
 
         # Tool paths
         art_exe_name = f"art_{art_platform}"
-        art_exe_path = bb_utils.find_tool_path(art_exe_name)
+        # Command object for ART, this will also check for art_exe_name's existence via find_tool_path
+        # BaseBuddyConfigError raised by Command constructor if art_exe_name not found will propagate up.
+        art_cmd_builder = bb_utils.Command(art_exe_name)
+
+        # samtools_exe_path might still be needed if samtools is used directly later for other things
+        # For now, assume it's still needed for check_fasta_indexed etc.
         samtools_exe_path = bb_utils.find_tool_path("samtools")
 
         # Reference FASTA handling
@@ -133,18 +138,27 @@ def simulate_short(
 
         art_output_prefix_path = run_output_dir / id_prefix
 
-        # ART command construction
-        cmd = [art_exe_path, "-ss", art_profile, "-i", str(current_reference_for_art),
-               "-l", str(read_length), "-f", str(depth), "-o", str(art_output_prefix_path)]
-        if is_paired_end:
-            cmd.extend(["-p", "-m", str(mean_fragment_length), "-s", str(std_dev_fragment_length)])
-        if manifest_params.get("quality_shift") is not None: cmd.extend(["-qs", str(manifest_params["quality_shift"])])
-        if manifest_params.get("quality_shift2") is not None and is_paired_end: cmd.extend(["-qs2", str(manifest_params["quality_shift2"])])
-        if manifest_params.get("random_seed") is not None: cmd.extend(["-rs", str(manifest_params["random_seed"])])
-        if manifest_params.get("no_aln_output", False): cmd.append("-na")
+        # ART command construction using Command class
+        art_cmd_builder.add_option("-ss", art_profile)
+        art_cmd_builder.add_option("-i", str(current_reference_for_art))
+        art_cmd_builder.add_option("-l", str(read_length))
+        art_cmd_builder.add_option("-f", str(depth))
+        art_cmd_builder.add_option("-o", str(art_output_prefix_path))
 
-        logger.info(f"Preparing to run {art_exe_name}...")
-        bb_utils.run_external_cmd(cmd, timeout_seconds=timeout, stream_output=True, cwd=run_output_dir)
+        if is_paired_end:
+            art_cmd_builder.add_flag("-p")
+            art_cmd_builder.add_option("-m", str(mean_fragment_length))
+            art_cmd_builder.add_option("-s", str(std_dev_fragment_length))
+
+        art_cmd_builder.add_option("-qs", manifest_params.get("quality_shift"))
+        if is_paired_end: # qs2 only if paired-end
+            art_cmd_builder.add_option("-qs2", manifest_params.get("quality_shift2"))
+        art_cmd_builder.add_option("-rs", manifest_params.get("random_seed"))
+        art_cmd_builder.add_flag("-na", condition=manifest_params.get("no_aln_output", False))
+
+        art_cmd_parts = art_cmd_builder.get_command_parts()
+        logger.info(f"Preparing to run {art_exe_name} with command: {' '.join(art_cmd_parts)}")
+        bb_utils.run_external_cmd(art_cmd_parts, timeout_seconds=timeout, stream_output=True, cwd=run_output_dir)
 
         logger.info(f"{art_exe_name} simulation completed. Verifying output files...")
         output_files_manifest: List[Dict[str,str]] = []
@@ -316,19 +330,30 @@ def spike_variants(
                 temp_addsnv_out_bam_name = f"{output_prefix_for_bam}_{input_bam_stem}_temp_addsnv.bam"
                 temp_addsnv_out_bam_path = run_output_dir / temp_addsnv_out_bam_name
 
-                cmd_addsnv = [
-                    "python", addsnv_exe_path,
-                    "--reference", str(ref_path_obj), "--in_bam", str(in_bam_path_obj),
-                    "--vcf", str(temp_vcf_path), "--out_bam", str(temp_addsnv_out_bam_path),
-                    "-p", str(vaf), "-s", str(seed)
-                ]
-                logger.info(f"Running addsnv.py for {input_bam_str}...")
-                bb_utils.run_external_cmd(cmd_addsnv, timeout_seconds=timeout*0.8, stream_output=True, cwd=run_output_dir)
+                # addsnv.py command construction
+                cmd_addsnv_builder = bb_utils.Command("python")
+                cmd_addsnv_builder.add_option(None, addsnv_exe_path) # Add script path as an argument
+                cmd_addsnv_builder.add_option("--reference", str(ref_path_obj))
+                cmd_addsnv_builder.add_option("--in_bam", str(in_bam_path_obj))
+                cmd_addsnv_builder.add_option("--vcf", str(temp_vcf_path))
+                cmd_addsnv_builder.add_option("--out_bam", str(temp_addsnv_out_bam_path))
+                cmd_addsnv_builder.add_option("-p", str(vaf))
+                cmd_addsnv_builder.add_option("-s", str(seed))
+
+                addsnv_cmd_parts = cmd_addsnv_builder.get_command_parts()
+                logger.info(f"Running addsnv.py for {input_bam_str} with command: {' '.join(addsnv_cmd_parts)}")
+                bb_utils.run_external_cmd(addsnv_cmd_parts, timeout_seconds=timeout*0.8, stream_output=True, cwd=run_output_dir)
                 bb_utils.ensure_file_exists(temp_addsnv_out_bam_path, f"Temporary output BAM from addsnv.py for {input_bam_str}")
 
                 logger.info(f"Sorting BAM: {temp_addsnv_out_bam_path.name} -> {final_bam_path.name}")
-                cmd_sort = [samtools_exe_path, "sort", str(temp_addsnv_out_bam_path), "-o", str(final_bam_path)]
-                bb_utils.run_external_cmd(cmd_sort, timeout_seconds=timeout*0.1, cwd=run_output_dir)
+                cmd_sort_builder = bb_utils.Command("samtools")
+                cmd_sort_builder.add_option(None, "sort")
+                cmd_sort_builder.add_option(None, str(temp_addsnv_out_bam_path))
+                cmd_sort_builder.add_option("-o", str(final_bam_path))
+
+                sort_cmd_parts = cmd_sort_builder.get_command_parts()
+                logger.info(f"Running samtools sort with command: {' '.join(sort_cmd_parts)}")
+                bb_utils.run_external_cmd(sort_cmd_parts, timeout_seconds=timeout*0.1, cwd=run_output_dir)
 
                 try:
                     temp_addsnv_out_bam_path.unlink()
@@ -442,8 +467,11 @@ def simulate_long(
         if not model: raise bb_utils.BaseBuddyInputError("NanoSim model must be specified.")
 
         # Tool Paths
-        nanosim_exe_path = bb_utils.find_tool_path("nanosim-h")
-        samtools_exe_path = bb_utils.find_tool_path("samtools")
+        # Command object for NanoSim-h, also checks for existence.
+        # BaseBuddyConfigError raised by Command constructor if nanosim-h not found will propagate.
+        nanosim_cmd_builder = bb_utils.Command("nanosim-h")
+
+        samtools_exe_path = bb_utils.find_tool_path("samtools") # Assuming still needed
 
         # Reference FASTA handling
         original_reference_path_obj = bb_utils.ensure_file_exists(reference_fasta, "Reference FASTA").resolve()
@@ -483,37 +511,41 @@ def simulate_long(
 
         nanosim_output_prefix_path = run_output_dir / nanosim_internal_out_prefix
 
-        # NanoSim-h command construction
-        cmd_base = [nanosim_exe_path, "simulate", "-r", str(current_reference_for_nanosim), "-m", model, "-o", str(nanosim_output_prefix_path)]
+        # NanoSim-h command construction using Command class
+        nanosim_cmd_builder.add_option(None, "simulate") # "simulate" is a sub-command for nanosim-h
+        nanosim_cmd_builder.add_option("-r", str(current_reference_for_nanosim))
+        nanosim_cmd_builder.add_option("-m", model)
+        nanosim_cmd_builder.add_option("-o", str(nanosim_output_prefix_path))
 
-        # Prefer num_reads if provided and valid, otherwise use depth.
         num_reads_param = manifest_params.get("num_reads")
+        # final_cmd_parts_for_nanosim: Optional[List[str]] = None # Not needed, builder holds parts
+
         if num_reads_param is not None:
             try:
                 num_reads_val = int(num_reads_param)
                 if num_reads_val > 0:
-                    cmd = cmd_base + ["-N", str(num_reads_val)]
-                    if "depth" in manifest_params: # Ensure depth is not also defining coverage
+                    nanosim_cmd_builder.add_option("-N", str(num_reads_val))
+                    if "depth" in manifest_params:
                          logger.info("Using num_reads for NanoSim; 'depth' parameter will be ignored by NanoSim if also set.")
-                elif depth > 0: # num_reads invalid, fallback to depth
-                    cmd = cmd_base + ["-c", str(depth)]
+                elif depth > 0:
+                    nanosim_cmd_builder.add_option("-c", str(depth))
                     logger.warning(f"num_reads parameter '{num_reads_param}' is not a positive integer. Falling back to depth '{depth}'.")
-                else: # Both num_reads and depth are invalid
-                    raise bb_utils.BaseBuddyInputError("Either 'depth' or 'num_reads' must be a positive integer for NanoSim.")
-            except ValueError: # num_reads not an int
+                else:
+                    raise bb_utils.BaseBuddyInputError("Either 'depth' or 'num_reads' must be a positive integer for NanoSim when num_reads is specified but invalid.")
+            except ValueError:
                 if depth > 0:
-                    cmd = cmd_base + ["-c", str(depth)]
+                    nanosim_cmd_builder.add_option("-c", str(depth))
                     logger.warning(f"num_reads parameter '{num_reads_param}' is not a valid integer. Falling back to depth '{depth}'.")
                 else:
                     raise bb_utils.BaseBuddyInputError("num_reads is not a valid integer and depth is not positive for NanoSim.")
-        elif depth > 0: # num_reads not provided, use depth
-            cmd = cmd_base + ["-c", str(depth)]
-        else: # Neither num_reads nor depth is valid
+        elif depth > 0:
+            nanosim_cmd_builder.add_option("-c", str(depth))
+        else:
              raise bb_utils.BaseBuddyInputError("Either 'depth' or 'num_reads' must be a positive integer for NanoSim.")
 
-
-        logger.info(f"Running NanoSim-h with command: {' '.join(cmd)}")
-        bb_utils.run_external_cmd(cmd, timeout_seconds=timeout, stream_output=True, cwd=run_output_dir)
+        final_cmd_parts_for_nanosim = nanosim_cmd_builder.get_command_parts()
+        logger.info(f"Running NanoSim-h with command: {' '.join(final_cmd_parts_for_nanosim)}")
+        bb_utils.run_external_cmd(final_cmd_parts_for_nanosim, timeout_seconds=timeout, stream_output=True, cwd=run_output_dir)
 
         output_files_manifest: List[Dict[str,str]] = []
         simulated_fastq = nanosim_output_prefix_path.with_name(nanosim_output_prefix_path.name + "_aligned_reads.fastq")
@@ -845,9 +877,8 @@ def simulate_signatures(
         genome_build_arg = reference_input
         ref_display_for_manifest = genome_build_arg # Store the string (e.g. "GRCh38")
 
-    from SigProfilerSimulator import SigProfilerSimulator
-
     try:
+        from SigProfilerSimulator import SigProfilerSimulator
         logger.info(f"Running SigProfilerSimulator for sample '{sample_id}' in '{run_output_dir}'...")
         sps = SigProfilerSimulator(
             project=sample_id,
@@ -861,9 +892,21 @@ def simulate_signatures(
             chrom_based=manifest_params.get("chrom_based", False),
             seed=manifest_params.get("seed", 0)
         )
+        # Assuming SigProfilerSimulator logs its own progress adequately
+        logger.info("SigProfilerSimulator finished successfully.")
+
+    except ImportError:
+        logger.error("SigProfilerSimulator library not found. Please install it.")
+        raise bb_utils.BaseBuddyConfigError(
+            "SigProfilerSimulator library not found. Please install it using: pip install SigProfilerSimulator"
+        )
     except Exception as e:
-        logger.error(f"SigProfilerSimulator failed: {e}")
-        raise bb_utils.BaseBuddyToolError(message=f"SigProfilerSimulator tool failed: {str(e)}", command=["SigProfilerSimulator", "...details..."])
+        logger.error(f"SigProfilerSimulator failed during execution: {e}")
+        raise bb_utils.BaseBuddyToolError(
+            message=f"SigProfilerSimulator tool encountered an error during execution: {str(e)}",
+            command=["SigProfilerSimulator (library call)"],
+            stderr=str(e)
+        )
 
     output_files_manifest: List[Dict[str,str]] = []
     actual_sps_output_dir = run_output_dir / sample_id / sig_type
@@ -900,34 +943,102 @@ def simulate_signatures(
 
 
 def introduce_strand_bias(in_bam: str, out_bam: str, forward_fraction: float = 0.5, seed: int = 0) -> None:
-    _ensure_exists(in_bam)
-    if not Path(in_bam + ".bai").exists():
-        subprocess.run(["samtools", "index", in_bam], check=True)
-    outdir = Path(out_bam).parent
-    outdir.mkdir(parents=True, exist_ok=True)
-    temp_dir = outdir / "strandtemp"
-    temp_dir.mkdir(exist_ok=True)
-    plus_bam = temp_dir / "plus.bam"
-    minus_bam = temp_dir / "minus.bam"
-    subprocess.run(["samtools", "view", "-h", "-F", "16", in_bam, "-o", str(plus_bam)], check=True)
-    subprocess.run(["samtools", "view", "-h", "-f", "16", in_bam, "-o", str(minus_bam)], check=True)
-    plus_keep = forward_fraction
-    minus_keep = 1.0 - forward_fraction
-    subprocess.run([
-        "samtools", "view", "-s",
-        f"{seed}.{int(plus_keep * 1000):03d}",
-        "-b", str(plus_bam), "-o", str(temp_dir / "plus_sub.bam")
-    ], check=True)
-    subprocess.run([
-        "samtools", "view", "-s",
-        f"{seed}.{int(minus_keep * 1000):03d}",
-        "-b", str(minus_bam), "-o", str(temp_dir / "minus_sub.bam")
-    ], check=True)
-    merged = temp_dir / "merged.bam"
-    subprocess.run([
-        "samtools", "merge", "-f", str(merged),
-        str(temp_dir / "plus_sub.bam"), str(temp_dir / "minus_sub.bam"),
-    ], check=True)
-    subprocess.run(["samtools", "sort", "-o", out_bam, str(merged)], check=True)
-    subprocess.run(["samtools", "index", out_bam], check=True)
-    shutil.rmtree(temp_dir)
+    logger.info(f"Introducing strand bias to '{in_bam}', outputting to '{out_bam}'.")
+    in_bam_path = bb_utils.ensure_file_exists(in_bam, "Input BAM for strand bias")
+
+    # Ensure output directory for out_bam exists
+    out_bam_path_obj = Path(out_bam)
+    bb_utils.ensure_directory_exists(out_bam_path_obj.parent, "Output directory for biased BAM", create=True)
+
+    # Indexing input BAM if necessary
+    # Check common BAI locations: next to BAM or with .bai appended to full name
+    bai_path_1 = in_bam_path.with_suffix(in_bam_path.suffix + ".bai")
+    bai_path_2 = Path(str(in_bam_path) + ".bai") # Handles cases like file.sorted.bam -> file.sorted.bam.bai
+
+    if not bai_path_1.exists() and not bai_path_2.exists():
+        logger.info(f"Indexing input BAM for strand bias: {in_bam_path}")
+        index_cmd_builder = bb_utils.Command("samtools")
+        index_cmd_builder.add_option(None, "index")
+        index_cmd_builder.add_option(None, str(in_bam_path))
+        bb_utils.run_external_cmd(index_cmd_builder.get_command_parts(), cwd=in_bam_path.parent, stream_output=True)
+
+    outdir = out_bam_path_obj.parent # This is already ensured by ensure_directory_exists
+    temp_dir = outdir / f"strandtemp_{Path(in_bam).stem}_{seed}" # More unique temp dir
+
+    try:
+        bb_utils.ensure_directory_exists(temp_dir, "Temporary directory for strand bias", create=True)
+
+        plus_bam = temp_dir / "plus.bam"
+        minus_bam = temp_dir / "minus.bam"
+
+        logger.debug(f"Separating forward strand reads to: {plus_bam}")
+        view_plus_cmd = bb_utils.Command("samtools")
+        view_plus_cmd.add_option(None, "view")
+        view_plus_cmd.add_flag("-h")
+        view_plus_cmd.add_option("-F", "16") # Select reads NOT reverse-complemented (i.e., forward strand)
+        view_plus_cmd.add_option(None, str(in_bam_path))
+        view_plus_cmd.add_option("-o", str(plus_bam))
+        bb_utils.run_external_cmd(view_plus_cmd.get_command_parts(), cwd=temp_dir, stream_output=True)
+
+        logger.debug(f"Separating reverse strand reads to: {minus_bam}")
+        view_minus_cmd = bb_utils.Command("samtools")
+        view_minus_cmd.add_option(None, "view")
+        view_minus_cmd.add_flag("-h")
+        view_minus_cmd.add_option("-f", "16") # Select reads that ARE reverse-complemented
+        view_minus_cmd.add_option(None, str(in_bam_path))
+        view_minus_cmd.add_option("-o", str(minus_bam))
+        bb_utils.run_external_cmd(view_minus_cmd.get_command_parts(), cwd=temp_dir, stream_output=True)
+
+        plus_keep_fraction_str = f"{seed}.{int(forward_fraction * 1000):03d}"
+        minus_keep_fraction_str = f"{seed}.{int((1.0 - forward_fraction) * 1000):03d}"
+
+        plus_sub_bam = temp_dir / "plus_sub.bam"
+        minus_sub_bam = temp_dir / "minus_sub.bam"
+
+        logger.debug(f"Subsampling forward strand reads (fraction: {forward_fraction}, seed string: {plus_keep_fraction_str})")
+        subsample_plus_cmd = bb_utils.Command("samtools")
+        subsample_plus_cmd.add_option(None, "view")
+        subsample_plus_cmd.add_option("-s", plus_keep_fraction_str)
+        subsample_plus_cmd.add_flag("-b") # Output BAM
+        subsample_plus_cmd.add_option(None, str(plus_bam))
+        subsample_plus_cmd.add_option("-o", str(plus_sub_bam))
+        bb_utils.run_external_cmd(subsample_plus_cmd.get_command_parts(), cwd=temp_dir, stream_output=True)
+
+        logger.debug(f"Subsampling reverse strand reads (fraction: {1.0-forward_fraction}, seed string: {minus_keep_fraction_str})")
+        subsample_minus_cmd = bb_utils.Command("samtools")
+        subsample_minus_cmd.add_option(None, "view")
+        subsample_minus_cmd.add_option("-s", minus_keep_fraction_str)
+        subsample_minus_cmd.add_flag("-b") # Output BAM
+        subsample_minus_cmd.add_option(None, str(minus_bam))
+        subsample_minus_cmd.add_option("-o", str(minus_sub_bam))
+        bb_utils.run_external_cmd(subsample_minus_cmd.get_command_parts(), cwd=temp_dir, stream_output=True)
+
+        merged_bam = temp_dir / "merged.bam"
+        logger.debug(f"Merging subsampled strand BAMs to: {merged_bam}")
+        merge_cmd = bb_utils.Command("samtools")
+        merge_cmd.add_option(None, "merge")
+        merge_cmd.add_flag("-f") # Overwrite if exists (should not with unique temp_dir)
+        merge_cmd.add_option(None, str(merged_bam))
+        merge_cmd.add_option(None, str(plus_sub_bam))
+        merge_cmd.add_option(None, str(minus_sub_bam))
+        bb_utils.run_external_cmd(merge_cmd.get_command_parts(), cwd=temp_dir, stream_output=True)
+
+        logger.info(f"Sorting merged BAM to final output: {out_bam_path_obj}")
+        sort_cmd = bb_utils.Command("samtools")
+        sort_cmd.add_option(None, "sort")
+        sort_cmd.add_option(None, str(merged_bam))
+        sort_cmd.add_option("-o", str(out_bam_path_obj))
+        bb_utils.run_external_cmd(sort_cmd.get_command_parts(), cwd=temp_dir, stream_output=True) # cwd can be outdir too
+
+        logger.info(f"Indexing final biased BAM: {out_bam_path_obj}")
+        final_index_cmd = bb_utils.Command("samtools")
+        final_index_cmd.add_option(None, "index")
+        final_index_cmd.add_option(None, str(out_bam_path_obj))
+        bb_utils.run_external_cmd(final_index_cmd.get_command_parts(), cwd=outdir, stream_output=True)
+
+        logger.info("Strand bias introduction process completed successfully.")
+
+    finally:
+        if temp_dir.exists():
+            logger.debug(f"Cleaning up temporary directory: {temp_dir}")
+            shutil.rmtree(temp_dir)
