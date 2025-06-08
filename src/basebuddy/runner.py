@@ -150,11 +150,13 @@ def simulate_short(
             art_cmd_builder.add_option("-m", str(mean_fragment_length))
             art_cmd_builder.add_option("-s", str(std_dev_fragment_length))
 
+
         art_cmd_builder.add_option("-qs", manifest_params.get("quality_shift"))
         if is_paired_end: # qs2 only if paired-end
             art_cmd_builder.add_option("-qs2", manifest_params.get("quality_shift2"))
         art_cmd_builder.add_option("-rs", manifest_params.get("random_seed"))
         art_cmd_builder.add_flag("-na", condition=manifest_params.get("no_aln_output", False))
+
 
         art_cmd_parts = art_cmd_builder.get_command_parts()
         logger.info(f"Preparing to run {art_exe_name} with command: {' '.join(art_cmd_parts)}")
@@ -1125,6 +1127,7 @@ def introduce_strand_bias(in_bam: str, out_bam: str, forward_fraction: float = 0
         if temp_dir.exists():
             logger.debug(f"Cleaning up temporary directory: {temp_dir}")
             shutil.rmtree(temp_dir)
+
 
 
 def run_germline_simulation_workflow(
