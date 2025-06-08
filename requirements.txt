@@ -1,0 +1,12 @@
+# Base dependencies (installable via pip, though some might be better via conda)
+typer
+pysam
+pybedtools
+pybigwig
+# samtools, bamsurgeon, art_illumina, nanosim-h are typically installed via conda/bioconda
+# and are external tools. Listing them here might be misleading for a pip-only user,
+# as pip won't install the command-line tools themselves, only potential Python bindings if they exist.
+# It's better to refer to docs/dependencies.md for these.
+
+# Python-only dependencies
+SigProfilerSimulator
