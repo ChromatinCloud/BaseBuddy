@@ -27,6 +27,7 @@ jobs:
         environment-file: environment.yml
         environment-name: basebuddy
         cache-environment: true
+        post-cleanup: "all" # Ensure environment is cleaned up
 
     - name: Install SigProfilerSimulator and perform editable install
       shell: bash -el {0}
@@ -39,7 +40,8 @@ jobs:
       run: |
         pytest tests/
 
-    - name: Run validate.sh
+    - name: Run smoke_test.sh
       shell: bash -el {0}
       run: |
-        bash validate.sh
+        chmod +x tests/smoke_test.sh
+        tests/smoke_test.sh

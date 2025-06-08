@@ -845,9 +845,8 @@ def simulate_signatures(
         genome_build_arg = reference_input
         ref_display_for_manifest = genome_build_arg # Store the string (e.g. "GRCh38")
 
-    from SigProfilerSimulator import SigProfilerSimulator
-
     try:
+        from SigProfilerSimulator import SigProfilerSimulator
         logger.info(f"Running SigProfilerSimulator for sample '{sample_id}' in '{run_output_dir}'...")
         sps = SigProfilerSimulator(
             project=sample_id,
@@ -861,9 +860,21 @@ def simulate_signatures(
             chrom_based=manifest_params.get("chrom_based", False),
             seed=manifest_params.get("seed", 0)
         )
+        # Assuming SigProfilerSimulator logs its own progress adequately
+        logger.info("SigProfilerSimulator finished successfully.")
+
+    except ImportError:
+        logger.error("SigProfilerSimulator library not found. Please install it.")
+        raise bb_utils.BaseBuddyConfigError(
+            "SigProfilerSimulator library not found. Please install it using: pip install SigProfilerSimulator"
+        )
     except Exception as e:
-        logger.error(f"SigProfilerSimulator failed: {e}")
-        raise bb_utils.BaseBuddyToolError(message=f"SigProfilerSimulator tool failed: {str(e)}", command=["SigProfilerSimulator", "...details..."])
+        logger.error(f"SigProfilerSimulator failed during execution: {e}")
+        raise bb_utils.BaseBuddyToolError(
+            message=f"SigProfilerSimulator tool encountered an error during execution: {str(e)}",
+            command=["SigProfilerSimulator (library call)"],
+            stderr=str(e)
+        )
 
     output_files_manifest: List[Dict[str,str]] = []
     actual_sps_output_dir = run_output_dir / sample_id / sig_type
