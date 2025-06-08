@@ -5,9 +5,10 @@
 BaseBuddy is a lightweight toolkit to simulate and manipulate sequencing data:
 - **Short‐read simulation** (Illumina/ART)
 - **Long‐read simulation** (Nanopore/NanoSim‐h)
-- **Spike‐in variants** (BAMSurgeon)
+- **Spike‐in variants** (SNPs and Indels via BAMSurgeon)
 - **Mutational signature simulation** (SigProfilerSimulator)
 - **Introduce strand bias** into existing BAM files
+- **Read Quality Control** (via FastQC integration)
 
 ---
 
@@ -23,6 +24,7 @@ BaseBuddy is a lightweight toolkit to simulate and manipulate sequencing data:
    3.3 [Spike‐In Variants](#spike‐in‐variants)  
    3.4 [Mutational Signature Simulation](#mutational‐signature‐simulation)  
    3.5 [Strand‐Bias Introduction](#strand‐bias‐introduction)  
+   3.6 [Read Quality Control](#read‐quality‐control)
 4. [Edge Cases & Troubleshooting](#edge‐cases‐troubleshooting)  
    4.1 [Missing Dependencies](#missing‐dependencies)  
    4.2 [Reference FASTA Issues](#reference‐fasta‐issues)  
@@ -46,6 +48,9 @@ BaseBuddy is a lightweight toolkit to simulate and manipulate sequencing data:
 Conda
 
 ## If you have mamba
+# Note: If environment.yml is missing or fails, please refer to
+# docs/dependencies.md for manual dependency installation instructions.
+# The full list includes Python packages and external CLI tools.
 mamba env create -f environment.yml
 mamba activate basebuddy
 pip install -e .
@@ -122,6 +127,24 @@ samtools faidx fgfr2_locus.fa
 
 Then use fgfr2_locus.fa in place of reference.
 
+---
+
+## Graphical User Interface (GUI)
+
+BaseBuddy also offers a graphical user interface (GUI) for easier access to its features, including:
+*   Short and Long Read Simulation
+*   Variant Spiking (SNPs and Indels)
+*   Germline Variant Simulation (FASTA modification + Read Simulation)
+*   Read Quality Control (FastQC)
+*   Applying Signatures to FASTA
+
+To run the GUI, ensure all dependencies (including `customtkinter`) are installed, then execute:
+```bash
+python -m src.basebuddy.gui.main_app
+```
+
+---
+
 ⸻
 
 Usage
@@ -162,25 +185,54 @@ basebuddy long /path/to/grch38.fa --depth 20 --model nanopore_R9.4.1 --outdir ./
 
 ⸻
 
-3.3. Spike‐In Variants
+3.3. Spike‐In Variants (SNPs and Indels)
 
-## Assumptions: 
-##  - You have a sorted & indexed BAM: spike_in.bam + spike_in.bai
-##  - You have variants.vcf
-##  - Reference FASTA (with .fai): grch38.fa + grch38.fa.fai
+The `spike` command allows you to introduce SNVs (Single Nucleotide Variants) and/or Indels (Insertions/Deletions) into one or more existing BAM files using BAMSurgeon.
 
-basebuddy spike /path/to/grch38.fa spike_in.bam variants.vcf \
-  --vaf 0.1 \
-  --out-bam spiked_10pct.bam \
-  --seed 42
+**Assumptions:**
+*   You have one or more sorted and indexed input BAM files.
+*   You have a reference FASTA file (e.g., `grch38.fa`) indexed with `samtools faidx`.
+*   You have VCF files specifying the SNPs and/or Indels to spike.
+*   BAMSurgeon (including `addsnv.py` and `addindel.py`) and its dependencies (like `samtools` and a Picard JAR) are installed and accessible.
 
-    •   Edge Cases:
-    •   If spike_in.bam or variants.vcf is missing → FileNotFoundError.
-    •   If variants.vcf has no header or malformed entries, BAMSurgeon will error out.
-    •   --vaf must be >0 and <1; invalid values cause an early exit.
-    •   If the input BAM isn’t indexed, BaseBuddy automatically runs samtools index spike_in.bam.
-    •   Output:
-    •   spiked_10pct.bam plus its index spiked_10pct.bam.bai.
+**Example:**
+
+To spike SNPs from `snps.vcf` and Indels from `indels.vcf` into `input1.bam` and `input2.bam`:
+
+```bash
+basebuddy spike \
+  --input-bam input1.bam \
+  --input-bam input2.bam \
+  --snp-vcf snps.vcf \
+  --indel-vcf indels.vcf \
+  --reference /path/to/grch38.fa \
+  --output-prefix spiked_output \
+  --vaf 0.25 \
+  --seed 123 \
+  --picard-jar /path/to/picard.jar
+```
+
+**Key Options:**
+*   `--input-bam` / `-i`: Path to an input BAM file. This option can be used multiple times for multiple input BAMs. (Required)
+*   `--snp-vcf`: VCF file containing SNPs to spike. (At least one of `--snp-vcf` or `--indel-vcf` is required)
+*   `--indel-vcf`: VCF file containing Indels to spike.
+*   `--reference` / `-r`: Path to the reference FASTA file.
+*   `--output-prefix` / `-p`: Prefix for output files. Final BAMs will be named like `{output_prefix}_{input_bam_stem}_final_sorted.bam` and placed in a run-specific subdirectory within the directory of the prefix (e.g., if prefix is `results/spiked_run`, output is in `results/spike_variants_run_timestamp/...`).
+*   `--vaf`: Target Variant Allele Frequency for the spiked variants (default: 0.05).
+*   `--seed`: Random seed for reproducibility.
+*   `--picard-jar`: Path to `picard.jar`. BAMSurgeon requires this. Alternatively, set the `BAMSURGEON_PICARD_JAR` environment variable.
+*   `--overwrite`: Overwrite the output directory if it already exists.
+
+**Edge Cases & Output:**
+*   If input BAMs or VCF files are missing, a `FileNotFoundError` or `FileError` will occur.
+*   If `addsnv.py`, `addindel.py`, or `samtools` are not found in `$PATH`, a `ConfigurationError` is raised.
+*   The command creates a run-specific output directory (e.g., `spike_variants_YYYYMMDD_HHMMSS/`) where all outputs are stored, including:
+    *   Final BAM files (one for each input BAM, e.g., `spiked_output_input1_final_sorted.bam`).
+    *   Index files (`.bai`) for each output BAM.
+    *   Log VCFs from `addsnv.py` and `addindel.py` (if variants were processed).
+    *   An IGV session file for each processed BAM.
+    *   A main `manifest.json` file summarizing the run.
+*   Input BAMs are automatically indexed if `.bai` files are missing (controlled by `--auto-index-bam`).
 
 ⸻
 
@@ -235,6 +287,32 @@ basebuddy strand-bias spiked_10pct.bam \
     •   Output:
     •   biased_10pct.bam + biased_10pct.bai.
     •   Temporary folder strandtemp/ created under the output directory, then removed.
+
+⸻
+
+3.6 Read Quality Control
+
+BaseBuddy can run FastQC on your FASTQ files to generate standard quality control reports.
+
+**Example:**
+
+To run FastQC on two FASTQ files and save reports to `./qc_results/my_qc_run/`:
+
+```bash
+basebuddy qc reads_1.fastq.gz reads_2.fastq.gz --output-dir ./qc_results --run-name my_qc_run
+```
+
+**Key Options:**
+*   `fastq_files...`: One or more input FASTQ files.
+*   `--output-dir` / `-o`: Specify the main directory where QC results will be stored. A run-specific subdirectory will be created inside this.
+*   `--run-name`: Optional name for the QC run, used for the subdirectory.
+*   `--threads` / `-t`: Number of threads FastQC should use.
+*   `--overwrite`: Overwrite the output subdirectory if it exists.
+
+**Output:**
+*   A run-specific output directory (e.g., `qc_results/my_qc_run_YYYYMMDD_HHMMSS/`).
+*   Inside this, FastQC will create its standard output structure for each input file (e.g., `reads_1_fastqc/fastqc_report.html`).
+*   A `manifest_fastqc_run.json` file summarizing the inputs and report locations.
 
 ⸻
 

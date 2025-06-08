@@ -1,0 +1,13 @@
+# This file lists Python dependencies for BaseBuddy.
+# External command-line tools (like samtools, ART, NanoSim-h, BAMSurgeon)
+# are NOT installed by pip from this file.
+# Please refer to docs/dependencies.md for instructions on installing those tools.
+
+# Base Python dependencies (installable via pip)
+typer
+pysam
+pybedtools
+pybigwig
+
+# Python-only dependencies required by specific features
+SigProfilerSimulator
