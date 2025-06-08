@@ -10,6 +10,7 @@ pysam
 pybedtools
 pybigwig
 
+
 # samtools, bamsurgeon, art_illumina, nanosim-h are typically installed via conda/bioconda
 # and are external tools. Listing them here might be misleading for a pip-only user,
 # as pip won't install the command-line tools themselves, only potential Python bindings if they exist.

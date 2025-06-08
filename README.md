@@ -162,25 +162,54 @@ basebuddy long /path/to/grch38.fa --depth 20 --model nanopore_R9.4.1 --outdir ./
 
 ⸻
 
-3.3. Spike‐In Variants
+3.3. Spike‐In Variants (SNPs and Indels)
 
-## Assumptions: 
-##  - You have a sorted & indexed BAM: spike_in.bam + spike_in.bai
-##  - You have variants.vcf
-##  - Reference FASTA (with .fai): grch38.fa + grch38.fa.fai
+The `spike` command allows you to introduce SNVs (Single Nucleotide Variants) and/or Indels (Insertions/Deletions) into one or more existing BAM files using BAMSurgeon.
 
-basebuddy spike /path/to/grch38.fa spike_in.bam variants.vcf \
-  --vaf 0.1 \
-  --out-bam spiked_10pct.bam \
-  --seed 42
+**Assumptions:**
+*   You have one or more sorted and indexed input BAM files.
+*   You have a reference FASTA file (e.g., `grch38.fa`) indexed with `samtools faidx`.
+*   You have VCF files specifying the SNPs and/or Indels to spike.
+*   BAMSurgeon (including `addsnv.py` and `addindel.py`) and its dependencies (like `samtools` and a Picard JAR) are installed and accessible.
 
-    •   Edge Cases:
-    •   If spike_in.bam or variants.vcf is missing → FileNotFoundError.
-    •   If variants.vcf has no header or malformed entries, BAMSurgeon will error out.
-    •   --vaf must be >0 and <1; invalid values cause an early exit.
-    •   If the input BAM isn’t indexed, BaseBuddy automatically runs samtools index spike_in.bam.
-    •   Output:
-    •   spiked_10pct.bam plus its index spiked_10pct.bam.bai.
+**Example:**
+
+To spike SNPs from `snps.vcf` and Indels from `indels.vcf` into `input1.bam` and `input2.bam`:
+
+```bash
+basebuddy spike \
+  --input-bam input1.bam \
+  --input-bam input2.bam \
+  --snp-vcf snps.vcf \
+  --indel-vcf indels.vcf \
+  --reference /path/to/grch38.fa \
+  --output-prefix spiked_output \
+  --vaf 0.25 \
+  --seed 123 \
+  --picard-jar /path/to/picard.jar
+```
+
+**Key Options:**
+*   `--input-bam` / `-i`: Path to an input BAM file. This option can be used multiple times for multiple input BAMs. (Required)
+*   `--snp-vcf`: VCF file containing SNPs to spike. (At least one of `--snp-vcf` or `--indel-vcf` is required)
+*   `--indel-vcf`: VCF file containing Indels to spike.
+*   `--reference` / `-r`: Path to the reference FASTA file.
+*   `--output-prefix` / `-p`: Prefix for output files. Final BAMs will be named like `{output_prefix}_{input_bam_stem}_final_sorted.bam` and placed in a run-specific subdirectory within the directory of the prefix (e.g., if prefix is `results/spiked_run`, output is in `results/spike_variants_run_timestamp/...`).
+*   `--vaf`: Target Variant Allele Frequency for the spiked variants (default: 0.05).
+*   `--seed`: Random seed for reproducibility.
+*   `--picard-jar`: Path to `picard.jar`. BAMSurgeon requires this. Alternatively, set the `BAMSURGEON_PICARD_JAR` environment variable.
+*   `--overwrite`: Overwrite the output directory if it already exists.
+
+**Edge Cases & Output:**
+*   If input BAMs or VCF files are missing, a `FileNotFoundError` or `FileError` will occur.
+*   If `addsnv.py`, `addindel.py`, or `samtools` are not found in `$PATH`, a `ConfigurationError` is raised.
+*   The command creates a run-specific output directory (e.g., `spike_variants_YYYYMMDD_HHMMSS/`) where all outputs are stored, including:
+    *   Final BAM files (one for each input BAM, e.g., `spiked_output_input1_final_sorted.bam`).
+    *   Index files (`.bai`) for each output BAM.
+    *   Log VCFs from `addsnv.py` and `addindel.py` (if variants were processed).
+    *   An IGV session file for each processed BAM.
+    *   A main `manifest.json` file summarizing the run.
+*   Input BAMs are automatically indexed if `.bai` files are missing (controlled by `--auto-index-bam`).
 
 ⸻
 

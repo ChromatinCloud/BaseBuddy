@@ -150,11 +150,13 @@ def simulate_short(
             art_cmd_builder.add_option("-m", str(mean_fragment_length))
             art_cmd_builder.add_option("-s", str(std_dev_fragment_length))
 
+
         art_cmd_builder.add_option("-qs", manifest_params.get("quality_shift"))
         if is_paired_end: # qs2 only if paired-end
             art_cmd_builder.add_option("-qs2", manifest_params.get("quality_shift2"))
         art_cmd_builder.add_option("-rs", manifest_params.get("random_seed"))
         art_cmd_builder.add_flag("-na", condition=manifest_params.get("no_aln_output", False))
+
 
         art_cmd_parts = art_cmd_builder.get_command_parts()
         logger.info(f"Preparing to run {art_exe_name} with command: {' '.join(art_cmd_parts)}")
@@ -1125,3 +1127,286 @@ def introduce_strand_bias(in_bam: str, out_bam: str, forward_fraction: float = 0
         if temp_dir.exists():
             logger.debug(f"Cleaning up temporary directory: {temp_dir}")
             shutil.rmtree(temp_dir)
+
+
+
+def run_germline_simulation_workflow(
+    output_root_dir: Path,
+    reference_fasta_path: str,
+    germline_vcf_path: str,
+    read_sim_type: str, # "short" or "long"
+    read_sim_params: Dict[str, Any], # Params for simulate_short/simulate_long
+    run_name: Optional[str] = None,
+    command_params: Optional[Dict[str, Any]] = None, # For manifest
+    overwrite_output: bool = False,
+    auto_index_fasta: bool = True, # For intermediate and final FASTAs
+    keep_intermediate_files: bool = False # New param to control cleanup
+) -> Dict[str, Any]:
+
+    effective_run_name = run_name if run_name else bb_utils.generate_unique_run_name(f"germline_sim_{read_sim_type}")
+    logger.info(f"Initiating germline simulation workflow for run: {effective_run_name}")
+
+    if command_params is None: command_params = {}
+    run_output_dir = bb_utils.prepare_run_output_dir(Path(output_root_dir), effective_run_name, overwrite_output)
+
+    manifest_params = copy.deepcopy(command_params)
+    manifest_params.update({
+        "run_name": effective_run_name, "reference_fasta_original": reference_fasta_path,
+        "germline_vcf_path": germline_vcf_path, "read_sim_type": read_sim_type,
+        "read_sim_params_input": copy.deepcopy(read_sim_params), # Store initial sim params
+        "overwrite_output": overwrite_output, "auto_index_fasta": auto_index_fasta,
+        "keep_intermediate_files": keep_intermediate_files,
+        "output_root_dir": str(output_root_dir)
+    })
+
+    try:
+        perl_exe_path = bb_utils.find_tool_path("perl")
+        simug_script_path = bb_utils.find_tool_path("simuG.pl")
+        samtools_exe_path = bb_utils.find_tool_path("samtools")
+    except bb_utils.BaseBuddyConfigError as e:
+        logger.error(f"A required tool for germline simulation was not found: {e.details if hasattr(e, 'details') else str(e)}")
+        raise
+
+    original_ref_path_obj = bb_utils.ensure_file_exists(reference_fasta_path, "Original reference FASTA").resolve()
+    bb_utils.check_fasta_indexed(original_ref_path_obj, samtools_exe_path, auto_index_if_missing=auto_index_fasta)
+
+    temp_snp_vcf_for_simug: Optional[Path] = None
+    temp_indel_vcf_for_simug: Optional[Path] = None
+    intermediate_simug_outputs_to_clean: List[Path] = []
+
+    final_modified_fasta_path: Optional[Path] = None
+    simulated_reads_results: Dict[str, Any] = {"status": "pending_read_simulation"}
+
+
+    try:
+        # VCF Splitting
+        actual_germline_vcf_path = bb_utils.ensure_file_exists(germline_vcf_path, "Germline VCF").resolve()
+        temp_snp_vcf_for_simug = run_output_dir / f"temp_snps_for_simug_{effective_run_name}.vcf"
+        temp_indel_vcf_for_simug = run_output_dir / f"temp_indels_for_simug_{effective_run_name}.vcf"
+        intermediate_simug_outputs_to_clean.extend([temp_snp_vcf_for_simug, temp_indel_vcf_for_simug])
+
+        snp_vcf_writer, indel_vcf_writer = None, None
+        snp_count, indel_count = 0, 0
+
+        with pysam.VariantFile(str(actual_germline_vcf_path)) as vcf_in:
+            # Create writers with header from input VCF
+            snp_vcf_writer = pysam.VariantFile(str(temp_snp_vcf_for_simug), "w", header=vcf_in.header)
+            indel_vcf_writer = pysam.VariantFile(str(temp_indel_vcf_for_simug), "w", header=vcf_in.header)
+
+            for rec in vcf_in.fetch():
+                if not rec.alts or len(rec.alts) > 1: # Skip no-alt or multi-allelic for simplicity with SimuG
+                    logger.warning(f"Skipping multi-allelic or no-alt record in germline VCF: {rec.chrom}:{rec.pos+1}")
+                    continue
+
+                is_snp = len(rec.ref) == 1 and len(rec.alts[0]) == 1
+                is_indel = (len(rec.ref) == 1 and len(rec.alts[0]) > 1) or \
+                           (len(rec.ref) > 1 and len(rec.alts[0]) == 1)
+
+                if is_snp:
+                    snp_vcf_writer.write(rec); snp_count += 1
+                elif is_indel:
+                    indel_vcf_writer.write(rec); indel_count += 1
+                # else: logger.debug(f"Skipping complex/other variant type: {rec.chrom}:{rec.pos+1}")
+
+        if snp_vcf_writer: snp_vcf_writer.close()
+        if indel_vcf_writer: indel_vcf_writer.close()
+
+        logger.info(f"Split germline VCF: {snp_count} SNPs written to {temp_snp_vcf_for_simug.name}, {indel_count} Indels to {temp_indel_vcf_for_simug.name}")
+        manifest_params["temp_snp_vcf_for_simug"] = temp_snp_vcf_for_simug.name if snp_count > 0 else None
+        manifest_params["temp_indel_vcf_for_simug"] = temp_indel_vcf_for_simug.name if indel_count > 0 else None
+
+        # Sequential SimuG Execution
+        current_fasta_for_simug = original_ref_path_obj
+
+        if snp_count > 0:
+            simug_snp_prefix_str = str(run_output_dir / f"{effective_run_name}_snp_modified")
+            cmd_builder_snp = bb_utils.Command(perl_exe_path).add_option(None, simug_script_path)
+            cmd_builder_snp.add_option("-refseq", str(current_fasta_for_simug))
+            cmd_builder_snp.add_option("-snp_vcf", str(temp_snp_vcf_for_simug))
+            cmd_builder_snp.add_option("-prefix", simug_snp_prefix_str)
+
+            logger.info(f"Running SimuG for SNPs: {' '.join(cmd_builder_snp.get_command_parts())}")
+            bb_utils.run_external_cmd(cmd_builder_snp.get_command_parts(), cwd=run_output_dir)
+
+            current_fasta_for_simug = Path(simug_snp_prefix_str + ".simulated.genome.fa")
+            bb_utils.ensure_file_exists(current_fasta_for_simug, "SimuG SNP-modified FASTA")
+            intermediate_simug_outputs_to_clean.append(current_fasta_for_simug)
+            # SimuG creates other files based on prefix; add them to cleanup
+            intermediate_simug_outputs_to_clean.append(Path(simug_snp_prefix_str + ".variant.locations.txt"))
+            intermediate_simug_outputs_to_clean.append(Path(simug_snp_prefix_str + ".output.vcf"))
+            logger.info(f"FASTA after SNP modification: {current_fasta_for_simug.name}")
+            manifest_params["simug_snp_modified_fasta"] = current_fasta_for_simug.name
+
+        if indel_count > 0:
+            # Use a different prefix for the next SimuG run to avoid overwriting its own logs if same prefix used
+            current_prefix_name_part = "_snp_indel_modified" if snp_count > 0 else "_indel_modified"
+            simug_indel_prefix_str = str(run_output_dir / f"{effective_run_name}{current_prefix_name_part}")
+
+            cmd_builder_indel = bb_utils.Command(perl_exe_path).add_option(None, simug_script_path)
+            cmd_builder_indel.add_option("-refseq", str(current_fasta_for_simug))
+            cmd_builder_indel.add_option("-indel_vcf", str(temp_indel_vcf_for_simug))
+            cmd_builder_indel.add_option("-prefix", simug_indel_prefix_str)
+
+            logger.info(f"Running SimuG for Indels: {' '.join(cmd_builder_indel.get_command_parts())}")
+            bb_utils.run_external_cmd(cmd_builder_indel.get_command_parts(), cwd=run_output_dir)
+
+            current_fasta_for_simug = Path(simug_indel_prefix_str + ".simulated.genome.fa")
+            bb_utils.ensure_file_exists(current_fasta_for_simug, "SimuG Indel-modified FASTA")
+            # If SNPs were applied, the FASTA from that step is now intermediate
+            if snp_count > 0 and current_fasta_for_simug != intermediate_simug_outputs_to_clean[-1]:
+                 # This condition might be true if simug_indel_prefix_str is different from simug_snp_prefix_str
+                 pass # The previous current_fasta_for_simug is already in intermediate_simug_outputs_to_clean
+            intermediate_simug_outputs_to_clean.append(current_fasta_for_simug) # Add the latest one
+            intermediate_simug_outputs_to_clean.append(Path(simug_indel_prefix_str + ".variant.locations.txt"))
+            intermediate_simug_outputs_to_clean.append(Path(simug_indel_prefix_str + ".output.vcf"))
+            logger.info(f"FASTA after Indel modification: {current_fasta_for_simug.name}")
+            manifest_params["simug_indel_modified_fasta"] = current_fasta_for_simug.name
+
+        final_modified_fasta_path = run_output_dir / f"{effective_run_name}_final_germline_genome.fa"
+        # current_fasta_for_simug should point to the latest version (snp+indel, or just snp, or just indel, or original if no variants)
+        if current_fasta_for_simug != original_ref_path_obj and current_fasta_for_simug.exists():
+            logger.info(f"Renaming SimuG output {current_fasta_for_simug.name} to {final_modified_fasta_path.name}")
+            current_fasta_for_simug.rename(final_modified_fasta_path)
+            # Remove the last SimuG output from intermediate_simug_outputs_to_clean as it's now the final one
+            if final_modified_fasta_path in intermediate_simug_outputs_to_clean:
+                intermediate_simug_outputs_to_clean.remove(final_modified_fasta_path)
+        elif current_fasta_for_simug == original_ref_path_obj : # No variants applied by SimuG
+            logger.info("No SNPs or Indels applied by SimuG. Using original reference for read simulation.")
+            shutil.copy(original_ref_path_obj, final_modified_fasta_path)
+            logger.info(f"Copied original reference to {final_modified_fasta_path.name} as no germline variants were applied/found.")
+        else: # Should not happen if ensure_file_exists worked
+            raise bb_utils.BaseBuddyFileError("Modified FASTA from SimuG not found unexpectedly.")
+
+        bb_utils.check_fasta_indexed(final_modified_fasta_path, samtools_exe_path, auto_index_if_missing=auto_index_fasta)
+        manifest_params["final_modified_germline_fasta"] = final_modified_fasta_path.name
+
+        # -- START MODIFICATION AREA --
+        logger.info(f"Starting read simulation ({read_sim_type}) using modified FASTA: {final_modified_fasta_path}")
+        manifest_params["read_simulation_status"] = "in_progress"
+
+        sub_run_output_root = run_output_dir
+        sub_run_name = f"{effective_run_name}_{read_sim_type}_reads"
+
+        sub_command_params_for_manifest = copy.deepcopy(read_sim_params)
+        sub_command_params_for_manifest.update({
+            "run_name": sub_run_name,
+            "reference_fasta_used_for_simulation": str(final_modified_fasta_path.name),
+            "original_germline_vcf": germline_vcf_path,
+            "parent_workflow_run_name": effective_run_name,
+        })
+
+        try:
+            if read_sim_type.lower() == "short":
+                sim_results = simulate_short(
+                    output_root_dir=sub_run_output_root,
+                    run_name=sub_run_name,
+                    command_params=sub_command_params_for_manifest,
+                    reference_fasta=str(final_modified_fasta_path),
+                    depth=read_sim_params.get("depth", 50),
+                    read_length=read_sim_params.get("read_length", 150),
+                    art_profile=read_sim_params.get("art_profile", "HS25"),
+                    mean_fragment_length=read_sim_params.get("mean_fragment_length", 400),
+                    std_dev_fragment_length=read_sim_params.get("std_dev_fragment_length", 50),
+                    is_paired_end=read_sim_params.get("is_paired_end", True),
+                    art_platform=read_sim_params.get("art_platform", "illumina"),
+                    overwrite_output=overwrite_output,
+                    auto_index_fasta=auto_index_fasta
+                )
+                simulated_reads_results = sim_results
+            elif read_sim_type.lower() == "long":
+                sim_results = simulate_long(
+                    output_root_dir=sub_run_output_root,
+                    run_name=sub_run_name,
+                    command_params=sub_command_params_for_manifest,
+                    reference_fasta=str(final_modified_fasta_path),
+                    depth=read_sim_params.get("depth", 30),
+                    model=read_sim_params.get("model", "nanopore_R9.4.1"),
+                    overwrite_output=overwrite_output,
+                    auto_index_fasta=auto_index_fasta
+                )
+                simulated_reads_results = sim_results
+            else:
+                err_msg = f"Unsupported read_sim_type: {read_sim_type}. Must be 'short' or 'long'."
+                logger.error(err_msg)
+                raise bb_utils.BaseBuddyInputError(err_msg)
+
+            manifest_params["read_simulation_status"] = "completed"
+            manifest_params["read_simulation_outputs"] = simulated_reads_results.get("output_files", [])
+            manifest_params["read_simulation_run_name"] = sub_run_name
+            logger.info(f"Read simulation completed. Results: {simulated_reads_results.get('output_directory')}")
+
+        except Exception as e_sim:
+            logger.error(f"Read simulation failed: {type(e_sim).__name__} - {e_sim}")
+            logger.error(traceback.format_exc())
+            manifest_params["read_simulation_status"] = "failed"
+            manifest_params["read_simulation_error"] = str(e_sim)
+            raise bb_utils.BaseBuddyToolError(f"Read simulation sub-step failed: {e_sim}", command=[read_sim_type, "simulation"])
+        # -- END MODIFICATION AREA --
+
+    except Exception as e:
+        logger.error(f"Error in germline simulation workflow: {type(e).__name__} - {e}")
+        logger.error(traceback.format_exc())
+        # Write manifest even on failure, with error status
+        manifest_params["workflow_status"] = "failed"
+        manifest_params["workflow_error"] = str(e)
+        bb_utils.write_run_manifest(
+            manifest_path = run_output_dir / "manifest_germline_run.json",
+            run_name = effective_run_name, command_name = "run_germline_simulation_workflow",
+            parameters = manifest_params, output_files = [], # No guaranteed output files on error
+            reference_genome_path = str(original_ref_path_obj)
+        )
+        raise # Re-raise the exception to be caught by CLI handler
+    finally:
+        if not keep_intermediate_files:
+            logger.info("Cleaning up intermediate files for germline workflow...")
+            for f_path in intermediate_simug_outputs_to_clean:
+                if f_path.exists() and f_path != final_modified_fasta_path : # Don't delete final renamed FASTA
+                    logger.debug(f"Deleting intermediate: {f_path.name}")
+                    f_path.unlink(missing_ok=True)
+                    # Attempt to delete associated SimuG log/VCF files if prefixes match intermediate FASTA names
+                    for simug_ext in [".variant.locations.txt", ".output.vcf", ".simulated.genome.fa.fai"]:
+                        simug_extra_file = f_path.with_name(f_path.name.replace(".simulated.genome.fa", "") + simug_ext)
+                        if simug_extra_file.exists():
+                            logger.debug(f"Deleting SimuG intermediate: {simug_extra_file.name}")
+                            simug_extra_file.unlink(missing_ok=True)
+        else:
+            logger.info("Skipping cleanup of intermediate files as per 'keep_intermediate_files=True'.")
+
+
+    manifest_params["workflow_status"] = "completed"
+    # Collect all key output files for the main manifest
+    main_output_files = [
+        {"name": "Final Modified Germline FASTA", "path": final_modified_fasta_path.name, "type": "FASTA"},
+        {"name": "FASTA Index for Modified Genome", "path": final_modified_fasta_path.name + ".fai", "type": "FAI"}
+    ]
+    if "output_files" in simulated_reads_results:
+        sub_run_name = manifest_params.get("read_simulation_run_name", f"{effective_run_name}_{read_sim_type}_reads")
+        for f_info in simulated_reads_results["output_files"]:
+            main_output_files.append({
+                "name": f"{read_sim_type.capitalize()} Reads: {f_info['name']}",
+                "path": str(Path(sub_run_name) / f_info['path']),
+                "type": f_info['type']
+            })
+    if "manifest_path" in simulated_reads_results:
+         sub_run_name = manifest_params.get("read_simulation_run_name", f"{effective_run_name}_{read_sim_type}_reads")
+         main_output_files.append({
+                "name": f"{read_sim_type.capitalize()} Reads Simulation Manifest",
+                "path": str(Path(sub_run_name) / Path(simulated_reads_results["manifest_path"]).name),
+                "type": "MANIFEST_SUB"
+            })
+
+    bb_utils.write_run_manifest(
+        manifest_path = run_output_dir / "manifest_germline_run.json",
+        run_name = effective_run_name, command_name = "run_germline_simulation_workflow",
+        parameters = manifest_params,
+        output_files = main_output_files,
+        reference_genome_path = str(original_ref_path_obj)
+    )
+
+    return {
+        "run_name": effective_run_name,
+        "output_directory": str(run_output_dir.resolve()),
+        "final_modified_fasta_path": str(final_modified_fasta_path.resolve()) if final_modified_fasta_path else None,
+        "simulated_reads_results": simulated_reads_results,
+        "manifest_path": str((run_output_dir / "manifest_germline_run.json").resolve())
+    }
