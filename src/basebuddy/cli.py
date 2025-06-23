@@ -252,24 +252,94 @@ def spike(
 
 @app.command()
 def signature(
-    reference: Path = None,
-    outdir: Path = Path("results_sig"),
-    sig_type: str = "SBS",
-    num_mutations: int = 100,
-    sample_id: str = "Sample",
+    reference: Optional[Path] = typer.Option(None, "--reference", "-r", help="Path to reference FASTA. Uses cached GRCh38 if not specified."),
+    outdir: Path = typer.Option(Path("results_sig"), "--outdir", "-o", help="Output directory for signature simulation results."),
+    sig_type: str = typer.Option("SBS", "--sig-type", "-t", help="Signature type: SBS (single base substitution), DBS (doublet), ID (indel)."),
+    num_mutations: int = typer.Option(1000, "--num-mutations", "-n", help="Number of mutations to simulate."),
+    sample_id: str = typer.Option("Sample", "--sample-id", "-s", help="Sample identifier for output files."),
+    exome: bool = typer.Option(False, "--exome", help="Simulate on exome regions only (requires genome build)."),
+    chrom_based: bool = typer.Option(False, "--chrom-based", help="Generate mutations chromosome by chromosome."),
+    seed: int = typer.Option(0, "--seed", help="Random seed for reproducibility."),
+    overwrite: bool = typer.Option(False, "--overwrite", help="Overwrite output directory if it exists.")
 ):
     """
-    Simulate mutational signatures:
-      basebuddy signature --sig-type SBS --num-mutations 1000 --sample-id tumorA --outdir ./sigout
-    (Reference genome optional; will use cached GRCh38 if not specified)
+    Simulate mutational signatures using SigProfilerSimulator.
+    
+    Examples:
+      basebuddy signature --sig-type SBS --num-mutations 5000 --sample-id tumor_sample
+      basebuddy signature --reference hg38.fa --sig-type ID --num-mutations 100 --exome
     """
-    runner.simulate_signatures(
-        str(reference) if reference else None,
-        outdir,
-        sig_type,
-        num_mutations,
-        sample_id,
-    )
+    # Validate signature type
+    valid_sig_types = ["SBS", "DBS", "ID"]
+    if sig_type not in valid_sig_types:
+        typer.secho(f"Error: Invalid signature type '{sig_type}'. Must be one of: {', '.join(valid_sig_types)}", 
+                   fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=1)
+    
+    # Validate num_mutations
+    if num_mutations <= 0:
+        typer.secho(f"Error: Number of mutations must be positive, got {num_mutations}", 
+                   fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=1)
+    
+    command_params = {
+        "sig_type": sig_type,
+        "num_mutations": num_mutations,
+        "sample_id": sample_id,
+        "exome": exome,
+        "chrom_based": chrom_based,
+        "seed": seed,
+        "overwrite_output": overwrite
+    }
+    
+    try:
+        results = runner.simulate_signatures(
+            reference_fasta=str(reference) if reference else None,
+            output_root_dir=outdir,
+            sig_type=sig_type,
+            num_mutations=num_mutations,
+            sample_id=sample_id,
+            run_name=None,
+            command_params=command_params,
+            overwrite_output=overwrite
+        )
+        
+        typer.secho(f"Mutational signature simulation completed for run: {results.get('run_name')}", 
+                   fg=typer.colors.GREEN)
+        typer.echo(f"Output directory: {results.get('output_directory')}")
+        if results.get('manifest_path'):
+            typer.echo(f"Manifest file: {results.get('manifest_path')}")
+        
+        # Report generated files
+        output_files = results.get('output_files', [])
+        if output_files:
+            typer.echo("\nGenerated files:")
+            for file_info in output_files:
+                typer.echo(f"  - {file_info.get('name')}: {file_info.get('path')}")
+        else:
+            typer.secho("Warning: No output files detected. Check logs for details.", fg=typer.colors.YELLOW)
+            
+    except bb_utils.BaseBuddyConfigError as e:
+        typer.secho(f"Configuration Error: {e}", fg=typer.colors.RED, err=True)
+        if e.details:
+            typer.secho(f"Details: {e.details}", fg=typer.colors.RED, err=True)
+        if "sigprofilersimulator" in str(e).lower():
+            typer.secho("\nHint: Install SigProfilerSimulator with: pip install SigProfilerSimulator", 
+                       fg=typer.colors.YELLOW)
+        raise typer.Exit(code=1)
+    except bb_utils.BaseBuddyToolError as e:
+        typer.secho(f"Tool Execution Error: {e}", fg=typer.colors.RED, err=True)
+        if e.details:
+            typer.secho(f"Details: {e.details}", fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=1)
+    except bb_utils.BaseBuddyFileError as e:
+        typer.secho(f"File Error: {e}", fg=typer.colors.RED, err=True)
+        if e.details:
+            typer.secho(f"Details: {e.details}", fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=1)
+    except Exception as e:
+        typer.secho(f"An unexpected error occurred: {type(e).__name__} - {e}", fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=1)
 
 @app.command("strand-bias")
 def strand_bias(

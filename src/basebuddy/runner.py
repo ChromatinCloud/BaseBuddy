@@ -1022,7 +1022,7 @@ def apply_signature_to_fasta(
 
 def simulate_signatures(
     output_root_dir: Path,
-    reference_input: str,
+    reference_fasta: Optional[str],  # Changed parameter name for consistency
     sig_type: str,
     num_mutations: int,
     sample_id: str = "Sample1",
@@ -1038,7 +1038,7 @@ def simulate_signatures(
 
     manifest_params = copy.deepcopy(command_params) if command_params is not None else {}
     manifest_params.update({
-        "run_name": effective_run_name, "reference_input": reference_input, "sig_type": sig_type,
+        "run_name": effective_run_name, "reference_fasta": reference_fasta, "sig_type": sig_type,
         "num_mutations": num_mutations, "sample_id": sample_id, "exome": exome,
         "overwrite_output": overwrite_output, "auto_index_fasta": auto_index_fasta,
         "output_root_dir": str(output_root_dir)
@@ -1048,30 +1048,43 @@ def simulate_signatures(
 
     genome_build_arg: Optional[str] = None
     custom_genome_path_arg: Optional[str] = None
-    ref_display_for_manifest = reference_input
+    ref_display_for_manifest = reference_fasta if reference_fasta else "GRCh38 (default)"
     ref_path_for_igv: Optional[str] = None # Not used by this runner for IGV session
+    
+    # Validate signature type
+    valid_sig_types = ["SBS", "DBS", "ID"]
+    if sig_type not in valid_sig_types:
+        raise bb_utils.BaseBuddyInputError(
+            f"Invalid signature type: {sig_type}",
+            details=f"Signature type must be one of: {', '.join(valid_sig_types)}. SBS=Single Base Substitution, DBS=Doublet Base Substitution, ID=Insertion/Deletion"
+        )
 
-    if Path(reference_input).is_file() or \
-       any(reference_input.endswith(ext) for ext in [".fa", ".fasta", ".fna"]) or \
-       "/" in reference_input or "\\" in reference_input:
+    if reference_fasta and (Path(reference_fasta).is_file() or \
+       any(reference_fasta.endswith(ext) for ext in [".fa", ".fasta", ".fna"]) or \
+       "/" in reference_fasta or "\\" in reference_fasta):
 
-        logger.info(f"Treating reference_input '{reference_input}' as a custom FASTA path.")
-        ref_path_obj = bb_utils.ensure_file_exists(reference_input, "Reference FASTA").resolve()
+        logger.info(f"Treating reference_fasta '{reference_fasta}' as a custom FASTA path.")
+        ref_path_obj = bb_utils.ensure_file_exists(reference_fasta, "Reference FASTA").resolve()
         if auto_index_fasta:
             samtools_exe_path = bb_utils.find_tool_path("samtools")
             bb_utils.check_fasta_indexed(ref_path_obj, samtools_exe_path, auto_index_if_missing=True)
         custom_genome_path_arg = str(ref_path_obj)
         ref_display_for_manifest = str(ref_path_obj)
-        genome_build_name = Path(reference_input).stem.split('.')[0]
+        genome_build_name = Path(reference_fasta).stem.split('.')[0]
         if genome_build_name in ["GRCh37", "GRCh38", "hg19", "hg38", "mm10"]:
              genome_build_arg = genome_build_name
         else:
             genome_build_arg = manifest_params.get("genome_build_str_for_custom", "GRCh38")
         logger.info(f"Using genome_build='{genome_build_arg}' and custom_genome='{custom_genome_path_arg}' for SigProfilerSimulator.")
-    else:
-        logger.info(f"Treating reference_input '{reference_input}' as a genome build string.")
-        genome_build_arg = reference_input
+    elif reference_fasta:
+        logger.info(f"Treating reference_fasta '{reference_fasta}' as a genome build string.")
+        genome_build_arg = reference_fasta
         ref_display_for_manifest = genome_build_arg # Store the string (e.g. "GRCh38")
+    else:
+        # Default to GRCh38 if no reference provided
+        logger.info("No reference specified, defaulting to GRCh38 genome build.")
+        genome_build_arg = "GRCh38"
+        ref_display_for_manifest = "GRCh38 (default)"
 
     try:
         from SigProfilerSimulator import SigProfilerSimulator
@@ -1105,20 +1118,78 @@ def simulate_signatures(
         )
 
     output_files_manifest: List[Dict[str,str]] = []
-    actual_sps_output_dir = run_output_dir / sample_id / sig_type
-    vcf_filename = f"{sample_id}.{sig_type}.all" # This is the VCF with all mutations
-    output_vcf_path = actual_sps_output_dir / vcf_filename
-
-    if output_vcf_path.exists():
-        bb_utils.ensure_file_exists(output_vcf_path, "Simulated VCF from SigProfilerSimulator")
-        relative_vcf_path = output_vcf_path.relative_to(run_output_dir)
-        output_files_manifest.append({"name": f"Simulated VCF ({sig_type})", "path": str(relative_vcf_path), "type": "VCF"})
-    else:
-        logger.warning(f"Primary output VCF from SigProfilerSimulator not found at expected path: {output_vcf_path}")
-        if actual_sps_output_dir.exists():
-            logger.warning(f"Contents of {actual_sps_output_dir}: {list(actual_sps_output_dir.iterdir())}")
-        else:
-            logger.warning(f"SigProfilerSimulator output directory {actual_sps_output_dir} does not exist.")
+    
+    # SigProfilerSimulator creates various output patterns depending on version and settings
+    # Check multiple possible output locations
+    possible_output_dirs = [
+        run_output_dir / sample_id / sig_type,
+        run_output_dir / sample_id,
+        run_output_dir / "output" / sample_id / sig_type,
+        run_output_dir / "output" / sig_type,
+        run_output_dir / sig_type
+    ]
+    
+    vcf_found = False
+    for output_dir in possible_output_dirs:
+        if not output_dir.exists():
+            continue
+            
+        # Look for VCF files with various naming patterns
+        vcf_patterns = [
+            f"{sample_id}.{sig_type}.all",
+            f"{sample_id}.{sig_type}.vcf",
+            f"{sample_id}.all.vcf",
+            f"{sig_type}.all",
+            "*.vcf"
+        ]
+        
+        for pattern in vcf_patterns:
+            vcf_files = list(output_dir.glob(pattern))
+            if vcf_files:
+                for vcf_file in vcf_files:
+                    relative_path = vcf_file.relative_to(run_output_dir)
+                    output_files_manifest.append({
+                        "name": f"Simulated VCF - {vcf_file.stem}",
+                        "path": str(relative_path),
+                        "type": "VCF"
+                    })
+                    logger.info(f"Found VCF output: {vcf_file}")
+                    vcf_found = True
+        
+        # Also look for other output files from SigProfilerSimulator
+        # MAF files
+        maf_files = list(output_dir.glob("*.maf"))
+        for maf_file in maf_files:
+            relative_path = maf_file.relative_to(run_output_dir)
+            output_files_manifest.append({
+                "name": f"MAF output - {maf_file.stem}",
+                "path": str(relative_path),
+                "type": "MAF"
+            })
+        
+        # Log files
+        log_files = list(output_dir.glob("*log*.txt")) + list(output_dir.glob("*.log"))
+        for log_file in log_files:
+            relative_path = log_file.relative_to(run_output_dir)
+            output_files_manifest.append({
+                "name": f"Log - {log_file.stem}",
+                "path": str(relative_path),
+                "type": "LOG"
+            })
+    
+    if not vcf_found:
+        # List all files in output directory for debugging
+        all_files = []
+        for output_dir in possible_output_dirs:
+            if output_dir.exists():
+                all_files.extend([f.name for f in output_dir.rglob("*") if f.is_file()])
+        
+        logger.error(f"No VCF output found from SigProfilerSimulator. Files found: {all_files[:10]}...")
+        raise bb_utils.BaseBuddyToolError(
+            message="SigProfilerSimulator completed but no VCF output found",
+            command=["SigProfilerSimulator"],
+            stderr=f"Expected VCF output not found. Check SigProfilerSimulator version and parameters. Files in output: {all_files[:10]}"
+        )
 
     manifest_path = run_output_dir / "manifest.json"
     bb_utils.write_run_manifest(
