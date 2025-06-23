@@ -1,3 +1,5 @@
+# pyproject.toml
+
 [build-system]
 requires = ["setuptools>=61.0"]
 build-backend = "setuptools.build_meta"
@@ -6,9 +8,20 @@ build-backend = "setuptools.build_meta"
 name = "basebuddy"
 version = "0.1.0"
 requires-python = ">=3.10"
+# These are the direct Python dependencies of your application.
+# They will be installed by pip.
+dependencies = [
+    "typer",
+    "pysam",
+    "bamsurgeon",
+    "SigProfilerSimulator",
+    "nanosim-h"
+]
 
+# This section makes the 'basebuddy' command work after installation.
 [project.scripts]
 basebuddy = "basebuddy.cli:app"
 
-[tool.setuptools.packages.find]
-where = ["src"]
+# Optional: Define development dependencies like pytest here.
+[project.optional-dependencies]
+dev = ["pytest"]

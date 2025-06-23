@@ -84,25 +84,78 @@ def simulate_short(
         run_output_dir = bb_utils.prepare_run_output_dir(Path(output_root_dir), effective_run_name, overwrite_output)
 
         # Parameter validation
-        if depth <= 0: raise bb_utils.BaseBuddyInputError(f"Sequencing depth must be a positive integer, got {depth}.")
-        if read_length <= 0: raise bb_utils.BaseBuddyInputError(f"Read length must be a positive integer, got {read_length}.")
+        if depth <= 0:
+            raise bb_utils.BaseBuddyInputError(
+                f"Invalid sequencing depth: {depth}",
+                details=f"Sequencing depth must be a positive integer (typically 1-100 for WGS, 100-1000 for targeted sequencing). Got {depth}."
+            )
+        if read_length <= 0:
+            raise bb_utils.BaseBuddyInputError(
+                f"Invalid read length: {read_length}",
+                details=f"Read length must be a positive integer representing the number of base pairs per read (typically 50-300bp for Illumina). Got {read_length}."
+            )
         if is_paired_end:
-            if mean_fragment_length <= 0: raise bb_utils.BaseBuddyInputError(f"Mean fragment length must be positive for paired-end reads, got {mean_fragment_length}.")
-            if std_dev_fragment_length < 0: raise bb_utils.BaseBuddyInputError(f"Standard deviation of fragment length cannot be negative, got {std_dev_fragment_length}.")
+            if mean_fragment_length <= 0:
+                raise bb_utils.BaseBuddyInputError(
+                    f"Invalid mean fragment length: {mean_fragment_length}",
+                    details=f"Mean fragment length must be positive for paired-end reads (typically 200-500bp for standard libraries). Got {mean_fragment_length}."
+                )
+            if std_dev_fragment_length < 0:
+                raise bb_utils.BaseBuddyInputError(
+                    f"Invalid fragment length standard deviation: {std_dev_fragment_length}",
+                    details=f"Standard deviation of fragment length cannot be negative (typically 10-50bp). Got {std_dev_fragment_length}."
+                )
+            if mean_fragment_length <= read_length:
+                raise bb_utils.BaseBuddyInputError(
+                    f"Fragment length too short for paired-end reads",
+                    details=f"Mean fragment length ({mean_fragment_length}bp) must be greater than read length ({read_length}bp) for paired-end sequencing."
+                )
 
         # Tool paths
         art_exe_name = f"art_{art_platform}"
+        valid_platforms = ["illumina", "454", "solid"]
+        if art_platform not in valid_platforms:
+            raise bb_utils.BaseBuddyInputError(
+                f"Invalid ART platform: {art_platform}",
+                details=f"Platform must be one of {valid_platforms}. Got '{art_platform}'."
+            )
+        
         # Command object for ART, this will also check for art_exe_name's existence via find_tool_path
-        # BaseBuddyConfigError raised by Command constructor if art_exe_name not found will propagate up.
-        art_cmd_builder = bb_utils.Command(art_exe_name)
+        try:
+            art_cmd_builder = bb_utils.Command(art_exe_name)
+        except bb_utils.BaseBuddyConfigError as e:
+            raise bb_utils.BaseBuddyConfigError(
+                f"ART simulator not found for platform '{art_platform}'",
+                details=f"The executable '{art_exe_name}' is required but not found in PATH. "
+                       f"Please install ART (https://www.niehs.nih.gov/research/resources/software/biostatistics/art/index.cfm) "
+                       f"or use the Docker image which includes all dependencies."
+            )
 
         # samtools_exe_path might still be needed if samtools is used directly later for other things
         # For now, assume it's still needed for check_fasta_indexed etc.
         samtools_exe_path = bb_utils.find_tool_path("samtools")
 
         # Reference FASTA handling
-        original_reference_path_obj = bb_utils.ensure_file_exists(reference_fasta, "Reference FASTA").resolve()
-        bb_utils.check_fasta_indexed(original_reference_path_obj, samtools_exe_path, auto_index_if_missing=auto_index_fasta)
+        try:
+            original_reference_path_obj = bb_utils.ensure_file_exists(reference_fasta, "Reference FASTA").resolve()
+        except bb_utils.BaseBuddyFileError as e:
+            raise bb_utils.BaseBuddyFileError(
+                f"Reference FASTA file not accessible",
+                details=f"Could not access reference file at '{reference_fasta}'. "
+                       f"Ensure the file exists and you have read permissions. "
+                       f"Use --reference flag or set up cached GRCh38 reference."
+            )
+        
+        try:
+            bb_utils.check_fasta_indexed(original_reference_path_obj, samtools_exe_path, auto_index_if_missing=auto_index_fasta)
+        except bb_utils.BaseBuddyToolError as e:
+            raise bb_utils.BaseBuddyToolError(
+                f"Failed to index reference FASTA",
+                command=e.command,
+                return_code=e.return_code,
+                stdout=e.stdout,
+                stderr=f"Could not create FASTA index (.fai) file. {e.stderr if e.stderr else ''}"
+            )
         manifest_params["original_reference_fasta"] = str(original_reference_path_obj)
 
         reference_after_variants = original_reference_path_obj # Start with original
@@ -158,7 +211,32 @@ def simulate_short(
 
         art_cmd_parts = art_cmd_builder.get_command_parts()
         logger.info(f"Preparing to run {art_exe_name} with command: {' '.join(art_cmd_parts)}")
-        bb_utils.run_external_cmd(art_cmd_parts, timeout_seconds=timeout, stream_output=True, cwd=run_output_dir)
+        try:
+            bb_utils.run_external_cmd(art_cmd_parts, timeout_seconds=timeout, stream_output=True, cwd=run_output_dir)
+        except bb_utils.BaseBuddyToolError as e:
+            # Parse common ART error patterns
+            if e.stderr and "profile" in e.stderr.lower():
+                raise bb_utils.BaseBuddyToolError(
+                    f"Invalid ART sequencing profile",
+                    command=e.command,
+                    return_code=e.return_code,
+                    stderr=f"Profile '{art_profile}' not recognized. Valid profiles include: HS10, HS20, HS25, HSXn, HSXt, MinS, MSv1, MSv3, NS50. {e.stderr}"
+                )
+            elif e.stderr and "memory" in e.stderr.lower():
+                raise bb_utils.BaseBuddyToolError(
+                    f"Insufficient memory for simulation",
+                    command=e.command,
+                    return_code=e.return_code,
+                    stderr=f"ART ran out of memory. Try reducing depth, using a smaller reference region, or increasing available memory. {e.stderr}"
+                )
+            else:
+                raise bb_utils.BaseBuddyToolError(
+                    f"ART simulation failed",
+                    command=e.command,
+                    return_code=e.return_code,
+                    stdout=e.stdout,
+                    stderr=e.stderr
+                )
 
         logger.info(f"{art_exe_name} simulation completed. Verifying output files...")
         output_files_manifest: List[Dict[str,str]] = []
@@ -545,9 +623,22 @@ def simulate_long(
         run_output_dir = bb_utils.prepare_run_output_dir(Path(output_root_dir), effective_run_name, overwrite_output)
 
         # Parameter validation
-        if depth <= 0 and not (manifest_params.get("num_reads") and int(manifest_params["num_reads"]) > 0) : # Check depth if num_reads is not primary
-             raise bb_utils.BaseBuddyInputError(f"Sequencing depth must be a positive integer if num_reads is not specified, got {depth}.")
-        if not model: raise bb_utils.BaseBuddyInputError("NanoSim model must be specified.")
+        if depth <= 0 and not (manifest_params.get("num_reads") and manifest_params["num_reads"] and int(manifest_params["num_reads"]) > 0):
+            raise bb_utils.BaseBuddyInputError(
+                f"Invalid sequencing parameters",
+                details=f"Either depth (got {depth}) or num_reads must be positive. Use --depth for coverage-based simulation or --num-reads for exact read count."
+            )
+        
+        valid_models = [
+            "nanopore_R9.4.1", "nanopore_R10.3", "nanopore_RNA",
+            "pacbio_CLR", "pacbio_CCS", "pacbio_sequel",
+            "dna_r9.4.1_e8.1", "dna_r10.3_e8.2", "rna_r9.4.1_e8.1"
+        ]
+        if not model:
+            raise bb_utils.BaseBuddyInputError(
+                "NanoSim model not specified",
+                details=f"Model is required. Common models: {', '.join(valid_models[:6])}"
+            )
 
         # Tool Paths
         # Command object for NanoSim-h, also checks for existence.
@@ -631,17 +722,39 @@ def simulate_long(
         bb_utils.run_external_cmd(final_cmd_parts_for_nanosim, timeout_seconds=timeout, stream_output=True, cwd=run_output_dir)
 
         output_files_manifest: List[Dict[str,str]] = []
-        simulated_fastq = nanosim_output_prefix_path.with_name(nanosim_output_prefix_path.name + "_aligned_reads.fastq")
-        if simulated_fastq.exists():
-            bb_utils.ensure_file_exists(simulated_fastq, "Simulated long reads FASTQ")
-            output_files_manifest.append({"name": "Simulated Long Reads (FASTQ)", "path": simulated_fastq.name, "type": "FASTQ"})
-        else:
-            simulated_fasta = nanosim_output_prefix_path.with_name(nanosim_output_prefix_path.name + "_aligned_reads.fasta")
-            if simulated_fasta.exists():
-                bb_utils.ensure_file_exists(simulated_fasta, "Simulated long reads FASTA")
-                output_files_manifest.append({"name": "Simulated Long Reads (FASTA)", "path": simulated_fasta.name, "type": "FASTA"})
-            else:
-                logger.warning(f"Could not find primary NanoSim output FASTQ/FASTA: {simulated_fastq.name} or {simulated_fasta.name}")
+        
+        # NanoSim output patterns vary by version and settings
+        # Check for various possible output files
+        possible_outputs = [
+            (nanosim_output_prefix_path.with_name(nanosim_output_prefix_path.name + "_aligned_reads.fastq"), "FASTQ", "Simulated Long Reads (aligned)"),
+            (nanosim_output_prefix_path.with_name(nanosim_output_prefix_path.name + "_aligned_reads.fasta"), "FASTA", "Simulated Long Reads (aligned)"),
+            (nanosim_output_prefix_path.with_name(nanosim_output_prefix_path.name + "_unaligned_reads.fastq"), "FASTQ", "Simulated Long Reads (unaligned)"),
+            (nanosim_output_prefix_path.with_name(nanosim_output_prefix_path.name + "_unaligned_reads.fasta"), "FASTA", "Simulated Long Reads (unaligned)"),
+            (nanosim_output_prefix_path.with_name(nanosim_output_prefix_path.name + ".fastq"), "FASTQ", "Simulated Long Reads"),
+            (nanosim_output_prefix_path.with_name(nanosim_output_prefix_path.name + ".fasta"), "FASTA", "Simulated Long Reads"),
+        ]
+        
+        primary_output_found = False
+        for output_path, file_type, description in possible_outputs:
+            if output_path.exists():
+                output_files_manifest.append({
+                    "name": description,
+                    "path": output_path.name,
+                    "type": file_type
+                })
+                if "aligned" in description or not primary_output_found:
+                    primary_output_found = True
+                logger.info(f"Found NanoSim output: {output_path.name}")
+        
+        if not primary_output_found:
+            # List all files in output directory for debugging
+            all_files = list(run_output_dir.glob(f"{nanosim_internal_out_prefix}*"))
+            logger.error(f"Could not find expected NanoSim output files. Files found: {[f.name for f in all_files]}")
+            raise bb_utils.BaseBuddyToolError(
+                message="NanoSim simulation completed but output files not found",
+                command=final_cmd_parts_for_nanosim,
+                stderr=f"Expected output patterns not found. Check NanoSim version compatibility. Files in output: {[f.name for f in all_files]}"
+            )
 
         log_file = nanosim_output_prefix_path.with_name(nanosim_output_prefix_path.name + "_log.txt")
         if log_file.exists():

@@ -1,5 +1,6 @@
 import typer
 from pathlib import Path
+from typing import Optional, List, Dict, Any
 from . import runner, __version__
 from basebuddy import utils as bb_utils # Add if not present, or adjust alias
 
@@ -166,11 +167,13 @@ def spike(
         typer.secho("Error: At least one input BAM file must be provided with --input-bam.", fg=typer.colors.RED, err=True)
         raise typer.Exit(code=1)
 
-    variants_list_for_runner: List[Dict[str, Any]] = []
-    if snp_vcf_file:
-        typer.secho(f"Note: --snp-vcf ('{snp_vcf_file}') provided. VCF processing logic in runner is pending.", fg=typer.colors.YELLOW, err=True)
-    if indel_vcf_file:
-        typer.secho(f"Note: --indel-vcf ('{indel_vcf_file}') provided. VCF processing logic in runner is pending.", fg=typer.colors.YELLOW, err=True)
+    # Validate VCF files exist if provided
+    if snp_vcf_file and not snp_vcf_file.exists():
+        typer.secho(f"Error: SNP VCF file not found: {snp_vcf_file}", fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=1)
+    if indel_vcf_file and not indel_vcf_file.exists():
+        typer.secho(f"Error: Indel VCF file not found: {indel_vcf_file}", fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=1)
 
     input_bams_str = [str(p) for p in in_bam]
 
@@ -196,24 +199,31 @@ def spike(
     }
 
     try:
-        # This call is to the *current* runner.spike_variants which expects `variants_list`.
-        # This will be changed when `runner.spike_variants` is refactored in the next step.
+        # Call the runner with VCF paths
         results = runner.spike_variants(
             output_root_dir=output_root_for_runner,
             reference_fasta=str(reference) if reference else None,
             input_bams=input_bams_str,
-            variants_list=variants_list_for_runner,
             output_prefix_for_bam=output_name_for_runner,
             run_name=None,
             command_params=command_params_for_runner,
+            snp_vcf_path=str(snp_vcf_file) if snp_vcf_file else None,
+            indel_vcf_path=str(indel_vcf_file) if indel_vcf_file else None,
             overwrite_output=overwrite_output,
             auto_index_input_bam=auto_index_input_bam,
             auto_index_fasta=auto_index_fasta
         )
-        typer.secho(f"Variant spiking call (structure pending full VCF support in runner) completed for run: {results.get('run_name')}", fg=typer.colors.GREEN)
+        typer.secho(f"Variant spiking completed successfully for run: {results.get('run_name')}", fg=typer.colors.GREEN)
         typer.echo(f"Output directory: {results.get('output_directory')}")
         if results.get('manifest_path'):
             typer.echo(f"Manifest: {results.get('manifest_path')}")
+        
+        # Report on spiked variants
+        if results.get('igv_session_xml_path'):
+            typer.echo(f"IGV session file: {results.get('igv_session_xml_path')}")
+        if results.get('output_bams'):
+            typer.echo(f"Generated {len(results.get('output_bams', []))} spiked BAM file(s)")
+        
         if results.get("errors_per_bam") and results["errors_per_bam"]:
             typer.secho("Some BAMs encountered errors during processing:", fg=typer.colors.YELLOW)
             for error_info in results["errors_per_bam"]:
@@ -221,7 +231,10 @@ def spike(
 
     except bb_utils.BaseBuddyConfigError as e:
         typer.secho(f"Configuration Error: {e}", fg=typer.colors.RED, err=True)
-        if e.details: typer.secho(f"Details: {e.details}", fg=typer.colors.RED, err=True)
+        if e.details: 
+            typer.secho(f"Details: {e.details}", fg=typer.colors.RED, err=True)
+        if "picard" in str(e).lower():
+            typer.secho("\nHint: Set BAMSURGEON_PICARD_JAR environment variable or use --picard-jar flag", fg=typer.colors.YELLOW)
         raise typer.Exit(code=1)
     except bb_utils.BaseBuddyToolError as e:
         typer.secho(f"Tool Execution Error: {e}", fg=typer.colors.RED, err=True)
