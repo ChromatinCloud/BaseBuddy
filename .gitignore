@@ -12,6 +12,8 @@
 /data/**
 
 /instructions/
+/results/
+/test_output/
 
 # -------------------------------------------------------------------
 # Whitelist Set 1: The COSMIC and SigProfiler reference files.
