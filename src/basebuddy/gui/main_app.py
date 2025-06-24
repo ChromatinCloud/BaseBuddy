@@ -34,8 +34,8 @@ KNOWN_NANOSIM_MODELS = [
 DEFAULT_NANOSIM_MODEL = "dna_r9.4.1_e8.1"
 BUNDLED_SIG_IDS = ["SBS1", "SBS5", "Custom Path..."] # Added "Custom Path..."
 
-# Settings file location
-SETTINGS_FILE = Path.home() / ".basebuddy" / "gui_settings.json"
+# Settings directory location
+SETTINGS_DIR = Path("refs/gui_settings")
 
 # Default reference paths for common genome builds
 DEFAULT_REFERENCES = {
@@ -121,6 +121,9 @@ class BaseBuddyGUI(customtkinter.CTk):
         self.create_long_read_tab()
         self.create_apply_signature_tab() # Create the new tab
         self.create_germline_sim_tab() # Create Germline Sim Tab
+        
+        # Apply loaded settings to all tabs
+        self.apply_settings()
 
         self.poll_thread()
         
@@ -128,31 +131,59 @@ class BaseBuddyGUI(customtkinter.CTk):
         self.protocol("WM_DELETE_WINDOW", self.on_closing)
     
     def load_settings(self) -> Dict[str, Any]:
-        """Load saved GUI settings from JSON file"""
-        try:
-            if SETTINGS_FILE.exists():
-                with open(SETTINGS_FILE, 'r') as f:
-                    return json.load(f)
-        except Exception as e:
-            logger.warning(f"Failed to load settings: {e}")
-        return {}
+        """Load saved GUI settings from individual tab JSON files"""
+        settings = {}
+        
+        # Ensure settings directory exists
+        SETTINGS_DIR.mkdir(parents=True, exist_ok=True)
+        
+        # Map of tab names to their settings files
+        tab_files = {
+            "short_read": "short_read_sim.settings.json",
+            "spike_variants": "variant_spiking.settings.json", 
+            "long_read": "long_read_sim.settings.json",
+            "apply_signature": "apply_signature.settings.json",
+            "germline_sim": "germline_simulation.settings.json"
+        }
+        
+        # Load each tab's settings
+        for tab_name, filename in tab_files.items():
+            settings_file = SETTINGS_DIR / filename
+            try:
+                if settings_file.exists():
+                    with open(settings_file, 'r') as f:
+                        settings[tab_name] = json.load(f)
+                        logger.info(f"Loaded settings for {tab_name} from {filename}")
+            except Exception as e:
+                logger.warning(f"Failed to load settings for {tab_name}: {e}")
+                
+        return settings
     
     def save_settings(self):
-        """Save current GUI settings to JSON file"""
+        """Save current GUI settings to individual tab JSON files"""
         try:
             # Ensure directory exists
-            SETTINGS_FILE.parent.mkdir(parents=True, exist_ok=True)
+            SETTINGS_DIR.mkdir(parents=True, exist_ok=True)
             
-            settings = {
-                "short_read": self.get_short_read_settings(),
-                "spike_variants": self.get_spike_variants_settings(),
-                "long_read": self.get_long_read_settings(),
-                "apply_signature": self.get_apply_signature_settings(),
-                "germline_sim": self.get_germline_sim_settings()
+            # Map of tab names to their settings files and getter methods
+            tab_configs = {
+                "short_read": ("short_read_sim.settings.json", self.get_short_read_settings),
+                "spike_variants": ("variant_spiking.settings.json", self.get_spike_variants_settings),
+                "long_read": ("long_read_sim.settings.json", self.get_long_read_settings),
+                "apply_signature": ("apply_signature.settings.json", self.get_apply_signature_settings),
+                "germline_sim": ("germline_simulation.settings.json", self.get_germline_sim_settings)
             }
             
-            with open(SETTINGS_FILE, 'w') as f:
-                json.dump(settings, f, indent=2)
+            # Save each tab's settings to its own file
+            for tab_name, (filename, getter_method) in tab_configs.items():
+                settings_file = SETTINGS_DIR / filename
+                try:
+                    tab_settings = getter_method()
+                    with open(settings_file, 'w') as f:
+                        json.dump(tab_settings, f, indent=2)
+                    logger.info(f"Saved settings for {tab_name} to {filename}")
+                except Exception as e:
+                    logger.error(f"Failed to save settings for {tab_name}: {e}")
                 
         except Exception as e:
             logger.error(f"Failed to save settings: {e}")
@@ -215,27 +246,237 @@ class BaseBuddyGUI(customtkinter.CTk):
     def get_apply_signature_settings(self) -> Dict[str, Any]:
         """Get current settings from apply signature tab"""
         return {
-            "reference_fasta": self.apply_sig_ref_fasta_entry.get(),
-            "output_fasta": self.apply_sig_output_fasta_entry.get(),
-            "signature_id": self.apply_sig_id_var.get(),
+            "reference_fasta": self.apply_sig_ref_fasta_entry.get() if hasattr(self, "apply_sig_ref_fasta_entry") else "",
+            "output_fasta": self.apply_sig_output_fasta_entry.get() if hasattr(self, "apply_sig_output_fasta_entry") else "",
+            "signature_id": self.apply_sig_id_var.get() if hasattr(self, "apply_sig_id_var") else "SBS1",
             "custom_path": self.apply_sig_custom_path_entry.get() if hasattr(self, "apply_sig_custom_path_entry") else "",
-            "num_mutations": self.apply_sig_num_mutations_entry.get(),
-            "random_seed": self.apply_sig_random_seed_entry.get(),
+            "num_mutations": self.apply_sig_num_mutations_entry.get() if hasattr(self, "apply_sig_num_mutations_entry") else "100",
+            "random_seed": self.apply_sig_random_seed_entry.get() if hasattr(self, "apply_sig_random_seed_entry") else "",
             "genomic_ranges": self.apply_sig_ranges_textbox.get("1.0", "end-1c") if hasattr(self, "apply_sig_ranges_textbox") else ""
         }
     
     def get_germline_sim_settings(self) -> Dict[str, Any]:
         """Get current settings from germline simulation tab"""
-        return {
-            "reference_fasta": self.germline_ref_fasta_entry.get() if hasattr(self, "germline_ref_fasta_entry") else "",
-            "germline_vcf": self.germline_vcf_entry.get() if hasattr(self, "germline_vcf_entry") else "",
-            "output_root": self.germline_output_root_entry.get() if hasattr(self, "germline_output_root_entry") else "",
-            "run_name": self.germline_run_name_entry.get() if hasattr(self, "germline_run_name_entry") else "",
-            "read_sim_type": self.germline_read_sim_type_var.get() if hasattr(self, "germline_read_sim_type_var") else "short",
-            "read_length": self.germline_read_length_entry.get() if hasattr(self, "germline_read_length_entry") else "150",
-            "depth": self.germline_depth_entry.get() if hasattr(self, "germline_depth_entry") else "50",
-            "overwrite": self.germline_overwrite_var.get() if hasattr(self, "germline_overwrite_var") else False
+        settings = {
+            "reference_fasta": self.gs_ref_fasta_entry.get() if hasattr(self, "gs_ref_fasta_entry") else "",
+            "germline_vcf": self.gs_germline_vcf_entry.get() if hasattr(self, "gs_germline_vcf_entry") else "",
+            "output_root": self.gs_output_root_entry.get() if hasattr(self, "gs_output_root_entry") else "",
+            "run_name": self.gs_run_name_entry.get() if hasattr(self, "gs_run_name_entry") else "",
+            "read_sim_type": self.gs_read_sim_type_var.get() if hasattr(self, "gs_read_sim_type_var") else "Short Reads",
+            "overwrite": self.gs_overwrite_var.get() if hasattr(self, "gs_overwrite_var") else False,
+            "auto_index_fasta": self.gs_auto_index_fasta_var.get() if hasattr(self, "gs_auto_index_fasta_var") else True,
+            "keep_intermediates": self.gs_keep_intermediates_var.get() if hasattr(self, "gs_keep_intermediates_var") else False
         }
+        
+        # Add short read specific settings
+        if hasattr(self, "gs_sr_art_platform_var"):
+            settings["sr_art_platform"] = self.gs_sr_art_platform_var.get()
+        if hasattr(self, "gs_sr_art_profile_var"):
+            settings["sr_art_profile"] = self.gs_sr_art_profile_var.get()
+        if hasattr(self, "gs_sr_read_length_entry"):
+            settings["sr_read_length"] = self.gs_sr_read_length_entry.get()
+        if hasattr(self, "gs_sr_depth_entry"):
+            settings["sr_depth"] = self.gs_sr_depth_entry.get()
+        if hasattr(self, "gs_sr_mean_frag_entry"):
+            settings["sr_mean_fragment"] = self.gs_sr_mean_frag_entry.get()
+        if hasattr(self, "gs_sr_std_dev_frag_entry"):
+            settings["sr_std_dev_fragment"] = self.gs_sr_std_dev_frag_entry.get()
+        if hasattr(self, "gs_sr_is_paired_end_var"):
+            settings["sr_is_paired_end"] = self.gs_sr_is_paired_end_var.get()
+            
+        # Add long read specific settings
+        if hasattr(self, "gs_lr_nanosim_model_var"):
+            settings["lr_nanosim_model"] = self.gs_lr_nanosim_model_var.get()
+        if hasattr(self, "gs_lr_depth_entry"):
+            settings["lr_depth"] = self.gs_lr_depth_entry.get()
+        if hasattr(self, "gs_lr_num_reads_entry"):
+            settings["lr_num_reads"] = self.gs_lr_num_reads_entry.get()
+            
+        return settings
+    
+    # Settings application methods
+    def apply_settings(self):
+        """Apply loaded settings to all tabs"""
+        if hasattr(self, 'settings') and self.settings:
+            if 'short_read' in self.settings:
+                self.apply_short_read_settings(self.settings['short_read'])
+            if 'spike_variants' in self.settings:
+                self.apply_spike_variants_settings(self.settings['spike_variants'])
+            if 'long_read' in self.settings:
+                self.apply_long_read_settings(self.settings['long_read'])
+            if 'apply_signature' in self.settings:
+                self.apply_signature_settings(self.settings['apply_signature'])
+            if 'germline_sim' in self.settings:
+                self.apply_germline_sim_settings(self.settings['germline_sim'])
+    
+    def apply_short_read_settings(self, settings: Dict[str, Any]):
+        """Apply saved settings to short read tab"""
+        if 'reference_fasta' in settings and hasattr(self, 'sr_ref_fasta_entry'):
+            self.sr_ref_fasta_entry.delete(0, 'end')
+            self.sr_ref_fasta_entry.insert(0, settings['reference_fasta'])
+        if 'output_root' in settings and hasattr(self, 'sr_output_root_entry'):
+            self.sr_output_root_entry.delete(0, 'end')
+            self.sr_output_root_entry.insert(0, settings['output_root'])
+        if 'run_name' in settings and hasattr(self, 'sr_run_name_entry'):
+            self.sr_run_name_entry.delete(0, 'end')
+            self.sr_run_name_entry.insert(0, settings['run_name'])
+        if 'art_platform' in settings and hasattr(self, 'sr_art_platform_var'):
+            self.sr_art_platform_var.set(settings['art_platform'])
+        if 'art_profile' in settings and hasattr(self, 'sr_art_profile_var'):
+            self.sr_art_profile_var.set(settings['art_profile'])
+        if 'genome_build' in settings and hasattr(self, 'sr_genome_build_var'):
+            self.sr_genome_build_var.set(settings['genome_build'])
+        if 'read_length' in settings and hasattr(self, 'sr_read_length_entry'):
+            self.sr_read_length_entry.delete(0, 'end')
+            self.sr_read_length_entry.insert(0, settings['read_length'])
+        if 'depth' in settings and hasattr(self, 'sr_depth_entry'):
+            self.sr_depth_entry.delete(0, 'end')
+            self.sr_depth_entry.insert(0, settings['depth'])
+        if 'mean_fragment' in settings and hasattr(self, 'sr_mean_frag_entry'):
+            self.sr_mean_frag_entry.delete(0, 'end')
+            self.sr_mean_frag_entry.insert(0, settings['mean_fragment'])
+        if 'std_dev_fragment' in settings and hasattr(self, 'sr_std_dev_frag_entry'):
+            self.sr_std_dev_frag_entry.delete(0, 'end')
+            self.sr_std_dev_frag_entry.insert(0, settings['std_dev_fragment'])
+        if 'is_paired_end' in settings and hasattr(self, 'sr_is_paired_end_var'):
+            self.sr_is_paired_end_var.set(settings['is_paired_end'])
+        if 'overwrite' in settings and hasattr(self, 'sr_overwrite_var'):
+            self.sr_overwrite_var.set(settings['overwrite'])
+        if 'auto_index' in settings and hasattr(self, 'sr_auto_index_var'):
+            self.sr_auto_index_var.set(settings['auto_index'])
+        if 'auto_align' in settings and hasattr(self, 'sr_auto_align_var'):
+            self.sr_auto_align_var.set(settings['auto_align'])
+        if 'genomic_ranges' in settings and hasattr(self, 'sr_genomic_ranges_text'):
+            self.sr_genomic_ranges_text.delete("1.0", "end")
+            self.sr_genomic_ranges_text.insert("1.0", settings['genomic_ranges'])
+        if 'aligner' in settings and hasattr(self, 'sr_aligner_var'):
+            self.sr_aligner_var.set(settings['aligner'])
+        if 'output_bam' in settings and hasattr(self, 'sr_output_bam_entry'):
+            self.sr_output_bam_entry.delete(0, 'end')
+            self.sr_output_bam_entry.insert(0, settings['output_bam'])
+    
+    def apply_spike_variants_settings(self, settings: Dict[str, Any]):
+        """Apply saved settings to spike variants tab"""
+        if 'reference_fasta' in settings and hasattr(self, 'sp_ref_fasta_entry'):
+            self.sp_ref_fasta_entry.delete(0, 'end')
+            self.sp_ref_fasta_entry.insert(0, settings['reference_fasta'])
+        if 'output_root' in settings and hasattr(self, 'sp_output_root_entry'):
+            self.sp_output_root_entry.delete(0, 'end')
+            self.sp_output_root_entry.insert(0, settings['output_root'])
+        if 'run_name' in settings and hasattr(self, 'sp_run_name_entry'):
+            self.sp_run_name_entry.delete(0, 'end')
+            self.sp_run_name_entry.insert(0, settings['run_name'])
+        if 'vcf_file' in settings and hasattr(self, 'sp_vcf_file_entry'):
+            self.sp_vcf_file_entry.delete(0, 'end')
+            self.sp_vcf_file_entry.insert(0, settings['vcf_file'])
+        if 'spike_percentage' in settings and hasattr(self, 'sp_spike_percentage_entry'):
+            self.sp_spike_percentage_entry.delete(0, 'end')
+            self.sp_spike_percentage_entry.insert(0, settings['spike_percentage'])
+        if 'overwrite' in settings and hasattr(self, 'sp_overwrite_var'):
+            self.sp_overwrite_var.set(settings['overwrite'])
+        if 'auto_index' in settings and hasattr(self, 'sp_auto_index_var'):
+            self.sp_auto_index_var.set(settings['auto_index'])
+    
+    def apply_long_read_settings(self, settings: Dict[str, Any]):
+        """Apply saved settings to long read tab"""
+        if 'reference_fasta' in settings and hasattr(self, 'lr_ref_fasta_entry'):
+            self.lr_ref_fasta_entry.delete(0, 'end')
+            self.lr_ref_fasta_entry.insert(0, settings['reference_fasta'])
+        if 'output_root' in settings and hasattr(self, 'lr_output_root_entry'):
+            self.lr_output_root_entry.delete(0, 'end')
+            self.lr_output_root_entry.insert(0, settings['output_root'])
+        if 'run_name' in settings and hasattr(self, 'lr_run_name_entry'):
+            self.lr_run_name_entry.delete(0, 'end')
+            self.lr_run_name_entry.insert(0, settings['run_name'])
+        if 'nanosim_model' in settings and hasattr(self, 'lr_nanosim_model_var'):
+            self.lr_nanosim_model_var.set(settings['nanosim_model'])
+        if 'depth' in settings and hasattr(self, 'lr_depth_entry'):
+            self.lr_depth_entry.delete(0, 'end')
+            self.lr_depth_entry.insert(0, settings['depth'])
+        if 'num_reads' in settings and hasattr(self, 'lr_num_reads_entry'):
+            self.lr_num_reads_entry.delete(0, 'end')
+            self.lr_num_reads_entry.insert(0, settings['num_reads'])
+        if 'overwrite' in settings and hasattr(self, 'lr_overwrite_var'):
+            self.lr_overwrite_var.set(settings['overwrite'])
+        if 'auto_index' in settings and hasattr(self, 'lr_auto_index_var'):
+            self.lr_auto_index_var.set(settings['auto_index'])
+    
+    def apply_signature_settings(self, settings: Dict[str, Any]):
+        """Apply saved settings to apply signature tab"""
+        if 'reference_fasta' in settings and hasattr(self, 'apply_sig_ref_fasta_entry'):
+            self.apply_sig_ref_fasta_entry.delete(0, 'end')
+            self.apply_sig_ref_fasta_entry.insert(0, settings['reference_fasta'])
+        if 'output_fasta' in settings and hasattr(self, 'apply_sig_output_fasta_entry'):
+            self.apply_sig_output_fasta_entry.delete(0, 'end')
+            self.apply_sig_output_fasta_entry.insert(0, settings['output_fasta'])
+        if 'num_mutations' in settings and hasattr(self, 'apply_sig_num_mutations_entry'):
+            self.apply_sig_num_mutations_entry.delete(0, 'end')
+            self.apply_sig_num_mutations_entry.insert(0, settings['num_mutations'])
+        if 'signature_id' in settings and hasattr(self, 'apply_sig_id_var'):
+            self.apply_sig_id_var.set(settings['signature_id'])
+        if 'custom_path' in settings and hasattr(self, 'apply_sig_custom_path_entry'):
+            self.apply_sig_custom_path_entry.delete(0, 'end')
+            self.apply_sig_custom_path_entry.insert(0, settings['custom_path'])
+        if 'random_seed' in settings and hasattr(self, 'apply_sig_random_seed_entry'):
+            self.apply_sig_random_seed_entry.delete(0, 'end')
+            self.apply_sig_random_seed_entry.insert(0, settings['random_seed'])
+        if 'genomic_ranges' in settings and hasattr(self, 'apply_sig_ranges_textbox'):
+            self.apply_sig_ranges_textbox.delete("1.0", "end")
+            self.apply_sig_ranges_textbox.insert("1.0", settings['genomic_ranges'])
+    
+    def apply_germline_sim_settings(self, settings: Dict[str, Any]):
+        """Apply saved settings to germline simulation tab"""
+        if 'reference_fasta' in settings and hasattr(self, 'gs_ref_fasta_entry'):
+            self.gs_ref_fasta_entry.delete(0, 'end')
+            self.gs_ref_fasta_entry.insert(0, settings['reference_fasta'])
+        if 'germline_vcf' in settings and hasattr(self, 'gs_germline_vcf_entry'):
+            self.gs_germline_vcf_entry.delete(0, 'end')
+            self.gs_germline_vcf_entry.insert(0, settings['germline_vcf'])
+        if 'output_root' in settings and hasattr(self, 'gs_output_root_entry'):
+            self.gs_output_root_entry.delete(0, 'end')
+            self.gs_output_root_entry.insert(0, settings['output_root'])
+        if 'run_name' in settings and hasattr(self, 'gs_run_name_entry'):
+            self.gs_run_name_entry.delete(0, 'end')
+            self.gs_run_name_entry.insert(0, settings['run_name'])
+        if 'read_sim_type' in settings and hasattr(self, 'gs_read_sim_type_var'):
+            self.gs_read_sim_type_var.set(settings['read_sim_type'])
+            self._on_gs_sim_type_change(settings['read_sim_type'])
+        # Apply short read specific settings if short reads selected
+        if settings.get('read_sim_type') == 'Short Reads':
+            if 'sr_art_platform' in settings and hasattr(self, 'gs_sr_art_platform_var'):
+                self.gs_sr_art_platform_var.set(settings['sr_art_platform'])
+            if 'sr_art_profile' in settings and hasattr(self, 'gs_sr_art_profile_var'):
+                self.gs_sr_art_profile_var.set(settings['sr_art_profile'])
+            if 'sr_read_length' in settings and hasattr(self, 'gs_sr_read_length_entry'):
+                self.gs_sr_read_length_entry.delete(0, 'end')
+                self.gs_sr_read_length_entry.insert(0, settings['sr_read_length'])
+            if 'sr_depth' in settings and hasattr(self, 'gs_sr_depth_entry'):
+                self.gs_sr_depth_entry.delete(0, 'end')
+                self.gs_sr_depth_entry.insert(0, settings['sr_depth'])
+            if 'sr_mean_fragment' in settings and hasattr(self, 'gs_sr_mean_frag_entry'):
+                self.gs_sr_mean_frag_entry.delete(0, 'end')
+                self.gs_sr_mean_frag_entry.insert(0, settings['sr_mean_fragment'])
+            if 'sr_std_dev_fragment' in settings and hasattr(self, 'gs_sr_std_dev_frag_entry'):
+                self.gs_sr_std_dev_frag_entry.delete(0, 'end')
+                self.gs_sr_std_dev_frag_entry.insert(0, settings['sr_std_dev_fragment'])
+            if 'sr_is_paired_end' in settings and hasattr(self, 'gs_sr_is_paired_end_var'):
+                self.gs_sr_is_paired_end_var.set(settings['sr_is_paired_end'])
+        # Apply long read specific settings if long reads selected
+        elif settings.get('read_sim_type') == 'Long Reads':
+            if 'lr_nanosim_model' in settings and hasattr(self, 'gs_lr_nanosim_model_var'):
+                self.gs_lr_nanosim_model_var.set(settings['lr_nanosim_model'])
+            if 'lr_depth' in settings and hasattr(self, 'gs_lr_depth_entry'):
+                self.gs_lr_depth_entry.delete(0, 'end')
+                self.gs_lr_depth_entry.insert(0, settings['lr_depth'])
+            if 'lr_num_reads' in settings and hasattr(self, 'gs_lr_num_reads_entry'):
+                self.gs_lr_num_reads_entry.delete(0, 'end')
+                self.gs_lr_num_reads_entry.insert(0, settings['lr_num_reads'])
+        if 'overwrite' in settings and hasattr(self, 'gs_overwrite_var'):
+            self.gs_overwrite_var.set(settings['overwrite'])
+        if 'auto_index_fasta' in settings and hasattr(self, 'gs_auto_index_fasta_var'):
+            self.gs_auto_index_fasta_var.set(settings['auto_index_fasta'])
+        if 'keep_intermediates' in settings and hasattr(self, 'gs_keep_intermediates_var'):
+            self.gs_keep_intermediates_var.set(settings['keep_intermediates'])
 
     def update_status(self, message: str, is_error: bool = False, clear_first: bool = False):
         self.status_textbox.configure(state="normal")
@@ -502,8 +743,15 @@ class BaseBuddyGUI(customtkinter.CTk):
         self.sr_aligner_menu.grid_remove()  # Initially hidden
         row_idx += 1
 
-        self.run_short_sim_button = customtkinter.CTkButton(master=tab, text="Run Simulation", command=self.run_short_simulation_thread)
-        self.run_short_sim_button.grid(row=row_idx, column=0, columnspan=3, padx=10, pady=(10,0))
+        # Create button frame for Run and IGV buttons
+        button_frame = customtkinter.CTkFrame(master=tab, fg_color="transparent")
+        button_frame.grid(row=row_idx, column=0, columnspan=4, padx=10, pady=(10,0))
+        
+        self.run_short_sim_button = customtkinter.CTkButton(master=button_frame, text="Run Simulation", command=self.run_short_simulation_thread)
+        self.run_short_sim_button.pack(side="left", padx=5)
+        
+        self.igv_button_short = customtkinter.CTkButton(master=button_frame, text="Import into IGV", command=self.on_igv_button_short_click, state="disabled")
+        self.igv_button_short.pack(side="left", padx=5)
         
         # Check if auto-align was saved as enabled
         if self.sr_auto_align_var.get():
@@ -605,6 +853,7 @@ class BaseBuddyGUI(customtkinter.CTk):
 
     def run_short_simulation_thread(self):
         if hasattr(self, 'igv_button_spike'): self.igv_button_spike.configure(state="disabled")
+        if hasattr(self, 'igv_button_short'): self.igv_button_short.configure(state="disabled")
         self._start_runner_thread(
             button_to_disable=self.run_short_sim_button,
             runner_func=src_bb_runner.simulate_short,
@@ -682,7 +931,30 @@ class BaseBuddyGUI(customtkinter.CTk):
         }
 
     def _handle_short_sim_results(self, result_dict: Dict[str, Any]):
-        pass
+        # Store results for IGV button
+        self.short_sim_results = result_dict
+        
+        # Enable IGV button if BAM file was created
+        if result_dict.get("output_files"):
+            bam_files = [f for f in result_dict["output_files"] if f["type"] == "BAM"]
+            if bam_files:
+                self.igv_button_short.configure(state="normal")
+    
+    def on_igv_button_short_click(self):
+        if not hasattr(self, 'short_sim_results') or not self.short_sim_results:
+            self.update_status("No simulation results available to send.", is_error=True, clear_first=True)
+            return
+        
+        # Get BAM files from results
+        output_files = self.short_sim_results.get("output_files", [])
+        bam_files = [f["path"] for f in output_files if f["type"] == "BAM"]
+        ref_fasta = self.short_sim_results.get("reference_fasta_used") or self.sr_ref_fasta_entry.get()
+        
+        if bam_files and ref_fasta:
+            self.update_status(f"Loading {len(bam_files)} BAM file(s) in IGV...", clear_first=True)
+            self.send_to_igv_desktop(reference_fasta_path=ref_fasta, data_file_paths=bam_files)
+        else:
+            self.update_status("No BAM files found in simulation results.", is_error=True, clear_first=True)
 
     def create_spike_variants_tab(self):
         tab = self.spike_tab
@@ -917,17 +1189,51 @@ class BaseBuddyGUI(customtkinter.CTk):
         self.lr_auto_index_fasta_var = customtkinter.BooleanVar(value=True)
         customtkinter.CTkCheckBox(master=tab, text="Auto-Index FASTA", variable=self.lr_auto_index_fasta_var).grid(row=row_idx, column=0, padx=10, pady=5, sticky="w"); row_idx += 1
 
-        self.run_long_sim_button = customtkinter.CTkButton(master=tab, text="Run Simulation", command=self.run_long_simulation_thread)
-        self.run_long_sim_button.grid(row=row_idx, column=0, columnspan=3, padx=10, pady=20)
+        # Create button frame for Run and IGV buttons
+        button_frame = customtkinter.CTkFrame(master=tab, fg_color="transparent")
+        button_frame.grid(row=row_idx, column=0, columnspan=3, padx=10, pady=20)
+        
+        self.run_long_sim_button = customtkinter.CTkButton(master=button_frame, text="Run Simulation", command=self.run_long_simulation_thread)
+        self.run_long_sim_button.pack(side="left", padx=5)
+        
+        self.igv_button_long = customtkinter.CTkButton(master=button_frame, text="Import into IGV", command=self.on_igv_button_long_click, state="disabled")
+        self.igv_button_long.pack(side="left", padx=5)
 
     def run_long_simulation_thread(self):
         if hasattr(self, 'igv_button_spike'): self.igv_button_spike.configure(state="disabled")
+        if hasattr(self, 'igv_button_long'): self.igv_button_long.configure(state="disabled")
         self._start_runner_thread(
             button_to_disable=self.run_long_sim_button,
             runner_func=src_bb_runner.simulate_long,
             param_extractor_func=self._get_long_sim_params,
-            result_handler_func=None
+            result_handler_func=self._handle_long_sim_results
         )
+    
+    def _handle_long_sim_results(self, result_dict: Dict[str, Any]):
+        # Store results for IGV button
+        self.long_sim_results = result_dict
+        
+        # Long reads typically produce FASTQ, but check if any BAM files were created
+        if result_dict.get("output_files"):
+            bam_files = [f for f in result_dict["output_files"] if f["type"] == "BAM"]
+            if bam_files:
+                self.igv_button_long.configure(state="normal")
+    
+    def on_igv_button_long_click(self):
+        if not hasattr(self, 'long_sim_results') or not self.long_sim_results:
+            self.update_status("No simulation results available to send.", is_error=True, clear_first=True)
+            return
+        
+        # Get BAM files from results
+        output_files = self.long_sim_results.get("output_files", [])
+        bam_files = [f["path"] for f in output_files if f["type"] == "BAM"]
+        ref_fasta = self.long_sim_results.get("reference_fasta_used") or self.lr_ref_fasta_entry.get()
+        
+        if bam_files and ref_fasta:
+            self.update_status(f"Loading {len(bam_files)} BAM file(s) in IGV...", clear_first=True)
+            self.send_to_igv_desktop(reference_fasta_path=ref_fasta, data_file_paths=bam_files)
+        else:
+            self.update_status("No BAM files found in long read simulation results.", is_error=True, clear_first=True)
 
     def _get_long_sim_params(self) -> Dict[str, Any]:
         ref_fasta = self.lr_ref_fasta_entry.get(); output_root = self.lr_output_root_entry.get()
@@ -1104,9 +1410,17 @@ class BaseBuddyGUI(customtkinter.CTk):
         row_idx += 1
 
         # Run button
-        self.run_apply_sig_button = customtkinter.CTkButton(tab, text="Apply Signature", 
+        # Create button frame for Run and IGV buttons
+        button_frame = customtkinter.CTkFrame(master=tab, fg_color="transparent")
+        button_frame.grid(row=row_idx, column=0, columnspan=3, padx=10, pady=20)
+        
+        self.run_apply_sig_button = customtkinter.CTkButton(button_frame, text="Apply Signature", 
                                                            command=self.on_apply_signature_click)
-        self.run_apply_sig_button.grid(row=row_idx, column=0, columnspan=3, padx=10, pady=20)
+        self.run_apply_sig_button.pack(side="left", padx=5)
+        
+        self.igv_button_apply_sig = customtkinter.CTkButton(button_frame, text="Import into IGV", 
+                                                           command=self.on_igv_button_apply_sig_click, state="disabled")
+        self.igv_button_apply_sig.pack(side="left", padx=5)
 
     def _on_sig_source_change(self):
         """Toggle visibility of bundled vs custom signature options"""
@@ -1128,8 +1442,9 @@ class BaseBuddyGUI(customtkinter.CTk):
             self.sig_file_entry.grid(row=3, column=1, padx=10, pady=5, sticky="ew")
 
     def on_apply_signature_click(self):
+        if hasattr(self, 'igv_button_apply_sig'): self.igv_button_apply_sig.configure(state="disabled")
         self._start_runner_thread(self.run_apply_sig_button, src_bb_runner.apply_signature_to_fasta,
-                                self._get_apply_signature_params)
+                                self._get_apply_signature_params, self._handle_apply_sig_results)
 
     def _get_apply_signature_params(self):
         ref_fasta = self.sig_ref_fasta_entry.get().strip()
@@ -1172,6 +1487,29 @@ class BaseBuddyGUI(customtkinter.CTk):
             params["signature_name"] = sig_name
         
         return params
+    
+    def _handle_apply_sig_results(self, result_dict: Dict[str, Any]):
+        # Store results for IGV button
+        self.apply_sig_results = result_dict
+        
+        # Enable IGV button if output FASTA was created
+        output_fasta = result_dict.get("output_fasta_path")
+        if output_fasta and Path(output_fasta).exists():
+            self.igv_button_apply_sig.configure(state="normal")
+    
+    def on_igv_button_apply_sig_click(self):
+        if not hasattr(self, 'apply_sig_results') or not self.apply_sig_results:
+            self.update_status("No signature results available to send.", is_error=True, clear_first=True)
+            return
+        
+        output_fasta = self.apply_sig_results.get("output_fasta_path")
+        
+        if output_fasta and Path(output_fasta).exists():
+            self.update_status(f"Loading mutated FASTA in IGV...", clear_first=True)
+            # For FASTA files, we load them as genome references
+            self.send_to_igv_desktop(reference_fasta_path=output_fasta)
+        else:
+            self.update_status("No output FASTA found in results.", is_error=True, clear_first=True)
 
     def create_germline_sim_tab(self):
         tab = self.germline_sim_tab

@@ -304,8 +304,11 @@ def simulate_short(
                         details="Install BWA with: conda install -c bioconda bwa"
                     )
                 
-                # Check if reference is indexed (use the actual reference used for simulation)
+                # Use the subset reference but we'll fix the chromosome names in post-processing
                 align_reference = str(current_reference_for_art)
+                logger.info(f"Using reference for alignment: {Path(align_reference).name}")
+                
+                # Check if reference is indexed
                 bwt_file = Path(align_reference).with_suffix(".fa.bwt")
                 if not bwt_file.exists():
                     logger.info(f"Creating BWA index for reference: {Path(align_reference).name}...")
@@ -346,48 +349,13 @@ def simulate_short(
                 # Clean up SAM file
                 sam_path.unlink(missing_ok=True)
                 
-                # Fix BAM header if we used a subset reference
+                # Fix chromosome names in BAM for IGV compatibility if using subset
                 if genomic_ranges and len(genomic_ranges) > 0:
-                    logger.info("Fixing BAM header for IGV compatibility...")
-                    # Extract chromosome name from first range
-                    first_range = genomic_ranges[0]
-                    chrom = first_range.split(':')[0]
-                    
-                    # Create a header fix using samtools reheader
-                    temp_header = bam_path.with_suffix('.header.sam')
-                    fixed_bam = bam_path.with_suffix('.fixed.bam')
-                    
-                    # Get current header
-                    samtools_view = bb_utils.Command("samtools")
-                    samtools_view.parts.extend(["view", "-H", str(bam_path)])
-                    result = subprocess.run(samtools_view.get_command_parts(), capture_output=True, text=True)
-                    
-                    if result.returncode == 0:
-                        # Replace the range with just the chromosome name in the header
-                        fixed_header = result.stdout
-                        for range_str in genomic_ranges:
-                            chrom_name = range_str.split(':')[0]
-                            fixed_header = fixed_header.replace(f"SN:{range_str}", f"SN:{chrom_name}")
-                        
-                        # Write fixed header
-                        with open(temp_header, 'w') as f:
-                            f.write(fixed_header)
-                        
-                        # Apply fixed header
-                        samtools_reheader = bb_utils.Command("samtools")
-                        samtools_reheader.parts.extend(["reheader", str(temp_header), str(bam_path)])
-                        with open(fixed_bam, 'wb') as f:
-                            reheader_result = subprocess.run(samtools_reheader.get_command_parts(), stdout=f)
-                        
-                        if reheader_result.returncode == 0:
-                            # Replace original with fixed
-                            bam_path.unlink()
-                            fixed_bam.rename(bam_path)
-                            logger.info("BAM header fixed for IGV compatibility")
-                        
-                        # Clean up temp files
-                        temp_header.unlink(missing_ok=True)
-                        fixed_bam.unlink(missing_ok=True)
+                    logger.info("Note: BAM contains subset reference names. For IGV compatibility, load the subset reference or use full genome alignment.")
+                    # Log the mapping for user reference
+                    for range_str in genomic_ranges:
+                        chrom = range_str.split(':')[0]
+                        logger.info(f"  Reference '{range_str}' corresponds to chromosome '{chrom}'")
                 
             else:
                 raise bb_utils.BaseBuddyInputError(f"Unsupported aligner: {aligner}. Only 'bwa' is currently supported.")
@@ -401,6 +369,12 @@ def simulate_short(
             # Add BAM to output manifest
             output_files_manifest.append({"name": "Aligned BAM", "path": bam_path.name, "type": "BAM"})
             output_files_manifest.append({"name": "BAM Index", "path": f"{bam_path.name}.bai", "type": "BAI"})
+            
+            # Also add the subset reference if used for alignment
+            if genomic_ranges and len(genomic_ranges) > 0:
+                subset_ref_name = Path(current_reference_for_art).name
+                output_files_manifest.append({"name": "Subset Reference (for IGV)", "path": subset_ref_name, "type": "FASTA"})
+                output_files_manifest.append({"name": "Subset Reference Index", "path": f"{subset_ref_name}.fai", "type": "FAI"})
             
             logger.info(f"Alignment complete: {bam_path}")
 
