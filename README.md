@@ -17,8 +17,9 @@ BaseBuddy is a lightweight toolkit to simulate and manipulate sequencing data:
 1. [Installation](#installation)  
    1.1 [Python (Conda or venv)](#python‐conda‐or‐venv)  
    1.2 [Docker](#docker)  
-2. [Getting a Reference FASTA](#getting‐a‐reference‐fasta)  
-3. [Usage Examples](#usage)  
+2. [Directory Structure](#directory-structure)
+3. [Getting a Reference FASTA](#getting‐a‐reference‐fasta)  
+4. [Usage Examples](#usage)  
    3.1 [Short‐Read Simulation](#short‐read‐simulation)  
    3.2 [Long‐Read Simulation](#long‐read‐simulation)  
    3.3 [Spike‐In Variants](#spike‐in‐variants)  
@@ -32,6 +33,33 @@ BaseBuddy is a lightweight toolkit to simulate and manipulate sequencing data:
    4.4 [Docker File‐Sharing Errors (macOS)](#docker‐filesharing‐errors)  
 5. [FAQ](#faq)  
 6. [License](#license)
+
+---
+
+## Directory Structure
+
+```
+BaseBuddy/
+├── src/              # Source code
+├── tests/            # Test suite
+├── docs/             # Documentation
+│   ├── installation/ # Installation guides
+│   ├── parameters/   # Parameter guides (BRAF, KRAS, etc.)
+│   └── usage/        # Usage tutorials
+├── scripts/          # Utility scripts
+│   ├── setup/        # Installation and setup scripts
+│   └── fixes/        # Common issue fixes
+├── examples/         # Example workflows and demos
+├── data/             # Data files
+├── logs/             # Log files
+└── vignettes/        # Detailed use cases
+```
+
+### Quick Start
+- **Run GUI**: `python run_gui.py`
+- **Run CLI**: `basebuddy --help`
+- **View examples**: See `examples/` directory
+- **Read docs**: See `docs/` directory
 
 ---
 

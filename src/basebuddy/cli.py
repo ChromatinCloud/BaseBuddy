@@ -23,7 +23,10 @@ def short(
     is_paired_end: bool = typer.Option(True, "--paired/--single", help="Simulate paired-end or single-end reads."),
     art_platform: str = typer.Option("illumina", "--platform", help="ART sequencing platform (e.g., illumina, 454)."),
     overwrite_output: bool = typer.Option(False, "--overwrite", help="Overwrite output directory if it exists."),
-    auto_index_fasta: bool = typer.Option(True, "--auto-index/--no-auto-index", help="Automatically index FASTA if .fai is missing.")
+    auto_index_fasta: bool = typer.Option(True, "--auto-index/--no-auto-index", help="Automatically index FASTA if .fai is missing."),
+    auto_align: bool = typer.Option(False, "--auto-align", help="Automatically align reads to reference and output BAM file."),
+    aligner: str = typer.Option("bwa", "--aligner", help="Aligner to use for auto-align (currently only bwa is supported)."),
+    genome_build: str = typer.Option(None, "--build", "-b", help="Genome build (e.g., hg19, hg38, GRCh37, GRCh38). For documentation only.")
 ):
     """
     Simulate short reads using ART (e.g., Illumina).
@@ -41,6 +44,9 @@ def short(
         "art_platform": art_platform,
         "overwrite_output": overwrite_output,
         "auto_index_fasta": auto_index_fasta,
+        "auto_align": auto_align,
+        "aligner": aligner,
+        "genome_build": genome_build,
     }
 
     try:
@@ -56,7 +62,10 @@ def short(
             is_paired_end=is_paired_end,
             overwrite_output=overwrite_output,
             art_platform=art_platform,
-            auto_index_fasta=auto_index_fasta
+            auto_index_fasta=auto_index_fasta,
+            auto_align=auto_align,
+            aligner=aligner,
+            genome_build=genome_build
         )
         typer.secho(f"Short read simulation completed successfully for run: {results.get('run_name')}", fg=typer.colors.GREEN)
         typer.echo(f"Output directory: {results.get('output_directory')}")
@@ -455,6 +464,224 @@ def qc(
         # import traceback
         # typer.secho(traceback.format_exc(), fg=typer.colors.YELLOW, err=True) # For debugging
         raise typer.Exit(code=1)
+
+@app.command("download-reference")
+def download_reference(
+    url: str = typer.Argument(..., help="URL of the reference file to download"),
+    output_dir: Path = typer.Option(Path("references"), "--output-dir", "-o", help="Output directory for downloaded reference"),
+    filename: Optional[str] = typer.Option(None, "--filename", "-f", help="Filename to save as (defaults to URL filename)"),
+    checksum: Optional[str] = typer.Option(None, "--checksum", help="Expected checksum (SHA256) for verification"),
+    checksum_type: str = typer.Option("sha256", "--checksum-type", help="Checksum algorithm (sha256, md5)"),
+    run_name: Optional[str] = typer.Option(None, "--run-name", help="Custom run name"),
+    timeout: int = typer.Option(10800, "--timeout", help="Download timeout in seconds (default: 3 hours)"),
+    overwrite: bool = typer.Option(False, "--overwrite", help="Overwrite existing files")
+):
+    """
+    Download reference genomes or other reference files.
+    
+    Examples:
+      basebuddy download-reference https://example.com/GRCh38.fa.gz --checksum abc123...
+      basebuddy download-reference ftp://ftp.ensembl.org/pub/release-104/fasta/homo_sapiens/dna/Homo_sapiens.GRCh38.dna.primary_assembly.fa.gz
+    """
+    # Import here to avoid circular imports
+    from basebuddy.bb_runners import download_reference_runner
+    
+    # Determine filename
+    if filename is None:
+        filename = url.split('/')[-1]
+        if not filename:
+            typer.secho("Error: Could not determine filename from URL. Please specify --filename", 
+                       fg=typer.colors.RED, err=True)
+            raise typer.Exit(code=1)
+    
+    # Validate checksum if provided
+    if checksum and checksum_type not in ["sha256", "md5", "sha1"]:
+        typer.secho(f"Error: Unsupported checksum type '{checksum_type}'", 
+                   fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=1)
+    
+    command_params = {
+        "url": url,
+        "filename": filename,
+        "checksum": checksum,
+        "checksum_type": checksum_type,
+        "timeout": timeout,
+        "overwrite": overwrite
+    }
+    
+    try:
+        # Create output directory
+        output_dir.mkdir(parents=True, exist_ok=True)
+        
+        # Run download
+        download_reference_runner(
+            output_root_dir=output_dir,
+            run_name=run_name or bb_utils.generate_unique_run_name("download_ref"),
+            command_params=command_params,
+            download_url=url,
+            destination_filename=filename,
+            expected_checksum=checksum or "skip",  # bb_runners expects a value
+            checksum_algorithm=checksum_type,
+            timeout_download=float(timeout),
+            overwrite_output=overwrite
+        )
+        
+        typer.secho(f"\nSuccessfully downloaded: {filename}", fg=typer.colors.GREEN)
+        typer.echo(f"Location: {output_dir / filename}")
+        
+    except bb_utils.BaseBuddyFileError as e:
+        typer.secho(f"File Error: {e}", fg=typer.colors.RED, err=True)
+        if e.details:
+            typer.secho(f"Details: {e.details}", fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=1)
+    except bb_utils.BaseBuddyToolError as e:
+        typer.secho(f"Download Error: {e}", fg=typer.colors.RED, err=True)
+        if e.details:
+            typer.secho(f"Details: {e.details}", fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=1)
+    except Exception as e:
+        typer.secho(f"Unexpected error: {type(e).__name__} - {e}", fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=1)
+
+
+@app.command("apply-signature")
+def apply_signature(
+    reference: Path = typer.Argument(..., help="Input reference FASTA file"),
+    signature_file: Optional[Path] = typer.Option(None, "--signature-file", "-s", help="Path to signature TSV file"),
+    signature_name: Optional[str] = typer.Option(None, "--signature-name", "-n", help="Name of signature to apply (e.g., SBS1)"),
+    output: Path = typer.Option(Path("mutated.fa"), "--output", "-o", help="Output FASTA file"),
+    num_mutations: int = typer.Option(1000, "--num-mutations", "-m", help="Number of mutations to apply"),
+    seed: int = typer.Option(42, "--seed", help="Random seed for reproducibility"),
+    bundled_type: Optional[str] = typer.Option(None, "--bundled-type", help="Use bundled signatures (sbs, dbs, id)")
+):
+    """
+    Apply mutational signatures to a reference FASTA file.
+    
+    Examples:
+      # Use bundled signatures
+      basebuddy apply-signature genome.fa --bundled-type sbs --signature-name SBS1 --num-mutations 5000
+      
+      # Use custom signature file
+      basebuddy apply-signature genome.fa --signature-file custom_sigs.tsv --signature-name MySignature
+    """
+    # Validate inputs
+    if not reference.exists():
+        typer.secho(f"Error: Reference file not found: {reference}", fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=1)
+    
+    if not signature_file and not bundled_type:
+        typer.secho("Error: Must specify either --signature-file or --bundled-type", 
+                   fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=1)
+    
+    if not signature_name:
+        typer.secho("Error: Must specify --signature-name", fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=1)
+    
+    try:
+        # Determine signature file path
+        if bundled_type:
+            # Use bundled signature files
+            from pathlib import Path as PathlibPath
+            data_dir = PathlibPath(__file__).parent / "data"
+            
+            bundled_files = {
+                "sbs": "sbs_grch37_cosmic_v3.3.tsv",
+                "dbs": "dbs_grch37_cosmic_v3.3.tsv",
+                "id": "id_grch37_cosmic_v3.3.tsv"
+            }
+            
+            if bundled_type.lower() not in bundled_files:
+                typer.secho(f"Error: Invalid bundled type '{bundled_type}'. Choose from: sbs, dbs, id",
+                           fg=typer.colors.RED, err=True)
+                raise typer.Exit(code=1)
+            
+            signature_file = data_dir / bundled_files[bundled_type.lower()]
+            if not signature_file.exists():
+                typer.secho(f"Error: Bundled signature file not found: {signature_file}",
+                           fg=typer.colors.RED, err=True)
+                raise typer.Exit(code=1)
+        
+        # Import signature utilities
+        from basebuddy.signature_utils import parse_signature_matrix_tsv, SignatureFormatError
+        
+        # Parse signature file
+        typer.echo(f"Loading signatures from: {signature_file}")
+        signatures = parse_signature_matrix_tsv(signature_file)
+        
+        if signature_name not in signatures:
+            available = list(signatures.keys())
+            typer.secho(f"Error: Signature '{signature_name}' not found in file", 
+                       fg=typer.colors.RED, err=True)
+            typer.echo(f"Available signatures: {', '.join(available[:10])}{'...' if len(available) > 10 else ''}")
+            raise typer.Exit(code=1)
+        
+        # Apply signature to FASTA
+        typer.echo(f"Applying {num_mutations} mutations from signature '{signature_name}'...")
+        
+        # Create a temporary run directory
+        output_dir = output.parent
+        output_dir.mkdir(parents=True, exist_ok=True)
+        
+        command_params = {
+            "signature_source": "bundled" if bundled_type else "custom",
+            "signature_file": str(signature_file),
+            "signature_name": signature_name,
+            "num_mutations": num_mutations,
+            "seed": seed
+        }
+        
+        # The runner expects signature_id_or_path to be either a signature ID or file path
+        # For bundled signatures, just pass the signature name
+        # For custom files, we need to pass the file path and let the runner parse it
+        if bundled_type:
+            signature_id_or_path = signature_name
+        else:
+            signature_id_or_path = str(signature_file)
+        
+        result = runner.apply_signature_to_fasta(
+            output_root_dir=output_dir,
+            run_name=None,  # Will be auto-generated
+            command_params=command_params,
+            input_fasta_path_str=str(reference),
+            output_fasta_name=output.name,
+            signature_id_or_path=signature_id_or_path,
+            num_mutations=num_mutations,
+            target_regions=None,
+            overwrite_output=True,  # We already checked if file exists
+            auto_index_input_fasta=True
+        )
+        
+        # Move the output file to the desired location if needed
+        generated_file = Path(result["output_directory"]) / output.name
+        if generated_file != output and generated_file.exists():
+            import shutil
+            shutil.move(str(generated_file), str(output))
+        
+        typer.secho(f"\nSuccessfully created mutated FASTA: {output}", fg=typer.colors.GREEN)
+        typer.echo(f"Applied {num_mutations} mutations using signature '{signature_name}'")
+        
+        # Index the output if it's a FASTA
+        if output.suffix.lower() in [".fa", ".fasta", ".fna"]:
+            typer.echo("Indexing output FASTA...")
+            import subprocess
+            try:
+                subprocess.run(["samtools", "faidx", str(output)], check=True, capture_output=True)
+                typer.echo("Indexing complete.")
+            except (subprocess.CalledProcessError, FileNotFoundError):
+                typer.secho("Warning: Could not index output FASTA (samtools not found)", 
+                           fg=typer.colors.YELLOW)
+        
+    except SignatureFormatError as e:
+        typer.secho(f"Signature Format Error: {e}", fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=1)
+    except FileNotFoundError as e:
+        typer.secho(f"File Error: {e}", fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=1)
+    except Exception as e:
+        typer.secho(f"Unexpected error: {type(e).__name__} - {e}", fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=1)
+
 
 if __name__ == "__main__":
     app()

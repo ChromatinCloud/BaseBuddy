@@ -13,9 +13,11 @@ requires-python = ">=3.10"
 dependencies = [
     "typer",
     "pysam",
-    "bamsurgeon",
-    "SigProfilerSimulator",
-    "nanosim-h"
+    # Note: bamsurgeon must be installed via conda, not pip
+    # "bamsurgeon",
+    # Note: These are optional - only needed for specific features
+    # "SigProfilerSimulator",
+    # "nanosim-h"
 ]
 
 # This section makes the 'basebuddy' command work after installation.
@@ -25,3 +27,9 @@ basebuddy = "basebuddy.cli:app"
 # Optional: Define development dependencies like pytest here.
 [project.optional-dependencies]
 dev = ["pytest"]
+# Optional dependencies for specific features
+signatures = ["SigProfilerSimulator"]
+longreads = ["nanosim-h"]
+gui = ["customtkinter"]
+# Full installation (note: bamsurgeon still needs conda)
+full = ["SigProfilerSimulator", "nanosim-h", "customtkinter"]

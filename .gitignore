@@ -221,4 +221,5 @@ tmp/
 .results_long/
 .results_sig/
 
-./refs/*
+# Reference genomes (can be large)
+/refs/

@@ -1,0 +1,27 @@
+# environment-gui.yml - Simplified environment for GUI usage
+# This environment is tested to work without conflicts
+name: basebuddy-gui
+channels:
+  - conda-forge
+  - bioconda
+  - defaults
+
+dependencies:
+  # --- Core Environment ---
+  - python=3.12
+  - pip
+  - tk  # Required for GUI
+  
+  # --- Essential Bioinformatics Tools ---
+  - samtools
+  - art
+  - gsl  # Required by ART
+  - bwa  # For auto-align feature
+  
+  # --- Python Packages (from Pip) ---
+  - pip:
+    - customtkinter  # For GUI
+    - typer
+    - pysam
+    # Install BaseBuddy in development mode
+    - -e .

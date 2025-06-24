@@ -10,13 +10,18 @@ import re # For basic range validation
 import sys # For platform check in on_open_output_dir_click
 import os # For startfile in on_open_output_dir_click
 import subprocess # For Popen in on_open_output_dir_click
+import traceback # For error handling
+import logging # For logger
+import json # For saving/loading settings
 
+logger = logging.getLogger(__name__)
 
 # Assuming runner and utils are accessible via PYTHONPATH
-from src.basebuddy import runner as src_bb_runner
+from basebuddy import runner as src_bb_runner
 # Ensure signature_utils is imported if apply_signature_to_fasta needs it for path resolution
-from src.basebuddy import signature_utils as sig_utils
-from bb_utils import BaseBuddyInputError, BaseBuddyToolError, BaseBuddyFileError, BaseBuddyConfigError
+from basebuddy import signature_utils as sig_utils
+from basebuddy import utils as bb_utils
+from basebuddy.utils import BaseBuddyInputError, BaseBuddyToolError, BaseBuddyFileError, BaseBuddyConfigError
 
 # Hardcoded for now, ideally from a shared config or bb_runners
 KNOWN_ART_PROFILES = {
@@ -29,10 +34,52 @@ KNOWN_NANOSIM_MODELS = [
 DEFAULT_NANOSIM_MODEL = "dna_r9.4.1_e8.1"
 BUNDLED_SIG_IDS = ["SBS1", "SBS5", "Custom Path..."] # Added "Custom Path..."
 
+# Settings file location
+SETTINGS_FILE = Path.home() / ".basebuddy" / "gui_settings.json"
+
+# Default reference paths for common genome builds
+DEFAULT_REFERENCES = {
+    "hg19/GRCh37": [
+        "refs/GRCh37/hs37d5.fa",
+        "refs/GRCh37/human_g1k_v37.fasta",
+        "refs/GRCh37/GRCh37.fa"
+    ],
+    "hg38/GRCh38": [
+        "refs/GRCh38/GRCh38_full_analysis_set_plus_decoy_hla.fa",
+        "refs/GRCh38/GRCh38.fa",
+        "refs/GRCh38/hg38.fa"
+    ],
+    "T2T-CHM13": [
+        "refs/T2T/chm13v2.0.fa",
+        "refs/T2T/T2T-CHM13.fa"
+    ],
+    "mm10": [
+        "refs/mm10/mm10.fa",
+        "refs/mm10/GRCm38.fa"
+    ],
+    "mm39": [
+        "refs/mm39/mm39.fa",
+        "refs/mm39/GRCm39.fa"
+    ]
+}
+
+# Example genomic ranges for each build
+EXAMPLE_RANGES = {
+    "hg19/GRCh37": "7:140453136-140453236\nMT:1-16569",  # BRAF V600E in GRCh37 (no 'chr' prefix)
+    "hg38/GRCh38": "chr7:140753336-140753436\nchrM:1-16569",  # BRAF V600E in GRCh38
+    "T2T-CHM13": "chr7:140753336-140753436\nchrM:1-16569",
+    "mm10": "chr7:45000000-45001000\nchrM:1-16299",
+    "mm39": "chr7:45000000-45001000\nchrM:1-16299",
+    "": "chr1:1000-2000\nchrM:1-16569"  # Default
+}
+
 
 class BaseBuddyGUI(customtkinter.CTk):
     def __init__(self):
         super().__init__()
+        
+        # Load saved settings
+        self.settings = self.load_settings()
 
         self.title("BaseBuddy GUI")
         self.geometry("800x850") # Increased height slightly for new tab
@@ -52,8 +99,16 @@ class BaseBuddyGUI(customtkinter.CTk):
         self.thread_queue = queue.Queue()
         self.spike_variants_results: Optional[Dict[str, Any]] = None
 
-        self.status_label = customtkinter.CTkLabel(self, text="Status:")
-        self.status_label.pack(padx=20, pady=(5,0), anchor="w")
+        # Create a frame to hold the status label and copy button
+        status_frame = customtkinter.CTkFrame(self, fg_color="transparent")
+        status_frame.pack(padx=20, pady=(5,0), fill="x")
+        
+        self.status_label = customtkinter.CTkLabel(status_frame, text="Status:")
+        self.status_label.pack(side="left", anchor="w")
+        
+        self.copy_status_button = customtkinter.CTkButton(status_frame, text="Copy Status", command=self.copy_status_to_clipboard, width=100)
+        self.copy_status_button.pack(side="left", padx=(10, 0))
+        
         self.status_textbox = customtkinter.CTkTextbox(self, height=120, state="disabled", wrap="word")
         self.status_textbox.pack(padx=20, pady=(0,10), fill="x", expand=False)
 
@@ -68,6 +123,119 @@ class BaseBuddyGUI(customtkinter.CTk):
         self.create_germline_sim_tab() # Create Germline Sim Tab
 
         self.poll_thread()
+        
+        # Save settings when window is closed
+        self.protocol("WM_DELETE_WINDOW", self.on_closing)
+    
+    def load_settings(self) -> Dict[str, Any]:
+        """Load saved GUI settings from JSON file"""
+        try:
+            if SETTINGS_FILE.exists():
+                with open(SETTINGS_FILE, 'r') as f:
+                    return json.load(f)
+        except Exception as e:
+            logger.warning(f"Failed to load settings: {e}")
+        return {}
+    
+    def save_settings(self):
+        """Save current GUI settings to JSON file"""
+        try:
+            # Ensure directory exists
+            SETTINGS_FILE.parent.mkdir(parents=True, exist_ok=True)
+            
+            settings = {
+                "short_read": self.get_short_read_settings(),
+                "spike_variants": self.get_spike_variants_settings(),
+                "long_read": self.get_long_read_settings(),
+                "apply_signature": self.get_apply_signature_settings(),
+                "germline_sim": self.get_germline_sim_settings()
+            }
+            
+            with open(SETTINGS_FILE, 'w') as f:
+                json.dump(settings, f, indent=2)
+                
+        except Exception as e:
+            logger.error(f"Failed to save settings: {e}")
+    
+    def on_closing(self):
+        """Handle window close event"""
+        self.save_settings()
+        self.destroy()
+    
+    # Settings getter methods for each tab
+    def get_short_read_settings(self) -> Dict[str, Any]:
+        """Get current settings from short read tab"""
+        return {
+            "reference_fasta": self.sr_ref_fasta_entry.get(),
+            "output_root": self.sr_output_root_entry.get(),
+            "run_name": self.sr_run_name_entry.get(),
+            "art_platform": self.sr_art_platform_var.get(),
+            "art_profile": self.sr_art_profile_var.get(),
+            "genome_build": self.sr_genome_build_var.get(),
+            "custom_build": self.sr_custom_build_entry.get() if hasattr(self, "sr_custom_build_entry") else "",
+            "read_length": self.sr_read_length_entry.get(),
+            "depth": self.sr_depth_entry.get(),
+            "mean_fragment": self.sr_mean_frag_entry.get(),
+            "std_dev_fragment": self.sr_std_dev_frag_entry.get(),
+            "genomic_ranges": self.short_sim_ranges_textbox.get("1.0", "end-1c"),
+            "timeout": self.sr_timeout_entry.get(),
+            "single_end": self.sr_single_end_var.get(),
+            "overwrite": self.sr_overwrite_var.get(),
+            "auto_align": self.sr_auto_align_var.get() if hasattr(self, "sr_auto_align_var") else False,
+            "aligner": self.sr_aligner_var.get() if hasattr(self, "sr_aligner_var") else "bwa"
+        }
+    
+    def get_spike_variants_settings(self) -> Dict[str, Any]:
+        """Get current settings from spike variants tab"""
+        return {
+            "input_bam": self.spike_input_bam_entry.get(),
+            "variants_vcf": self.spike_variants_vcf_entry.get(),
+            "reference_fasta": self.spike_ref_fasta_entry.get(),
+            "output_root": self.spike_output_root_entry.get(),
+            "run_name": self.spike_run_name_entry.get(),
+            "sample_name": self.spike_sample_name_entry.get(),
+            "keep_original": self.spike_keep_original_var.get(),
+            "overwrite": self.spike_overwrite_var.get()
+        }
+    
+    def get_long_read_settings(self) -> Dict[str, Any]:
+        """Get current settings from long read tab"""
+        return {
+            "reference_fasta": self.lr_ref_fasta_entry.get(),
+            "output_root": self.lr_output_root_entry.get(),
+            "run_name": self.lr_run_name_entry.get(),
+            "nanosim_model": self.lr_nanosim_model_var.get(),
+            "depth": self.lr_depth_entry.get(),
+            "num_reads": self.lr_num_reads_entry.get(),
+            "perfect_reads": self.lr_perfect_reads_var.get(),
+            "kmer_bias": self.lr_kmer_bias_var.get(),
+            "overwrite": self.lr_overwrite_var.get()
+        }
+    
+    def get_apply_signature_settings(self) -> Dict[str, Any]:
+        """Get current settings from apply signature tab"""
+        return {
+            "reference_fasta": self.apply_sig_ref_fasta_entry.get(),
+            "output_fasta": self.apply_sig_output_fasta_entry.get(),
+            "signature_id": self.apply_sig_id_var.get(),
+            "custom_path": self.apply_sig_custom_path_entry.get() if hasattr(self, "apply_sig_custom_path_entry") else "",
+            "num_mutations": self.apply_sig_num_mutations_entry.get(),
+            "random_seed": self.apply_sig_random_seed_entry.get(),
+            "genomic_ranges": self.apply_sig_ranges_textbox.get("1.0", "end-1c") if hasattr(self, "apply_sig_ranges_textbox") else ""
+        }
+    
+    def get_germline_sim_settings(self) -> Dict[str, Any]:
+        """Get current settings from germline simulation tab"""
+        return {
+            "reference_fasta": self.germline_ref_fasta_entry.get() if hasattr(self, "germline_ref_fasta_entry") else "",
+            "germline_vcf": self.germline_vcf_entry.get() if hasattr(self, "germline_vcf_entry") else "",
+            "output_root": self.germline_output_root_entry.get() if hasattr(self, "germline_output_root_entry") else "",
+            "run_name": self.germline_run_name_entry.get() if hasattr(self, "germline_run_name_entry") else "",
+            "read_sim_type": self.germline_read_sim_type_var.get() if hasattr(self, "germline_read_sim_type_var") else "short",
+            "read_length": self.germline_read_length_entry.get() if hasattr(self, "germline_read_length_entry") else "150",
+            "depth": self.germline_depth_entry.get() if hasattr(self, "germline_depth_entry") else "50",
+            "overwrite": self.germline_overwrite_var.get() if hasattr(self, "germline_overwrite_var") else False
+        }
 
     def update_status(self, message: str, is_error: bool = False, clear_first: bool = False):
         self.status_textbox.configure(state="normal")
@@ -76,12 +244,23 @@ class BaseBuddyGUI(customtkinter.CTk):
         self.status_textbox.insert("end", message + "\n")
         self.status_textbox.configure(state="disabled")
         self.status_textbox.see("end")
+    
+    def copy_status_to_clipboard(self):
+        """Copy the contents of the status textbox to clipboard"""
+        status_content = self.status_textbox.get("1.0", "end-1c")
+        if status_content:
+            self.clipboard_clear()
+            self.clipboard_append(status_content)
+            # Briefly change button text to indicate success
+            self.copy_status_button.configure(text="Copied!")
+            self.after(1500, lambda: self.copy_status_button.configure(text="Copy Status"))
 
 
     def poll_thread(self):
         try:
             message_type, data, button_to_enable = self.thread_queue.get_nowait()
             if message_type == "completion":
+                logger.info(f"Received completion message in poll_thread")
                 result_dict, success = data
 
                 if success:
@@ -89,7 +268,7 @@ class BaseBuddyGUI(customtkinter.CTk):
                         self.spike_variants_results = result_dict # Store results
                         if self.spike_variants_results.get("igv_session_file"):
                             self.igv_button_spike.configure(state="normal")
-                    elif button_to_disable == self.run_germline_sim_button:
+                    elif button_to_enable == self.run_germline_sim_button:
                         self.germline_sim_results = result_dict # Store results
                         modified_fasta = result_dict.get("final_modified_fasta_path")
                         sim_results = result_dict.get("simulated_reads_results", {})
@@ -106,13 +285,39 @@ class BaseBuddyGUI(customtkinter.CTk):
 
                 run_name = result_dict.get("run_name", "Unknown run")
                 output_dir = result_dict.get("output_directory", "N/A")
-                msg = f"Run '{run_name}' completed {'successfully' if success else 'with issues'}.\n"
-                msg += f"Output Directory: {output_dir}\n"
+                
+                # Enhanced success message
+                if success:
+                    msg = f"SIMULATION SUCCESSFUL\n"
+                    msg += f"{'='*50}\n"
+                    msg += f"Run Name: {run_name}\n"
+                    msg += f"Output Directory: {output_dir}\n"
+                    msg += f"{'='*50}\n"
+                else:
+                    msg = f"Run '{run_name}' completed with issues.\n"
+                    msg += f"Output Directory: {output_dir}\n"
 
                 if "output_files" in result_dict and result_dict["output_files"]: # Check if list is not empty
-                    msg += "Output Files:\n"
-                    for f_info in result_dict["output_files"]:
-                        msg += f"  - {f_info['name']} ({f_info['type']}): {f_info['path']}\n"
+                    msg += "\nGenerated Files:\n"
+                    # Group files by type
+                    fastq_files = [f for f in result_dict["output_files"] if f["type"] == "FASTQ"]
+                    bam_files = [f for f in result_dict["output_files"] if f["type"] in ["BAM", "BAI"]]
+                    other_files = [f for f in result_dict["output_files"] if f["type"] not in ["FASTQ", "BAM", "BAI"]]
+                    
+                    if fastq_files:
+                        msg += "  FASTQ Files:\n"
+                        for f_info in fastq_files:
+                            msg += f"    - {f_info['path']}\n"
+                    
+                    if bam_files:
+                        msg += "  Alignment Files:\n"
+                        for f_info in bam_files:
+                            msg += f"    - {f_info['path']} ({f_info['type']})\n"
+                    
+                    if other_files:
+                        msg += "  Other Files:\n"
+                        for f_info in other_files:
+                            msg += f"    - {f_info['path']} ({f_info['type']})\n"
 
                 # Specific outputs for apply_signature_to_fasta
                 if "output_modified_fasta_path" in result_dict:
@@ -120,7 +325,13 @@ class BaseBuddyGUI(customtkinter.CTk):
                 if result_dict.get("num_mutations_applied") is not None:
                      msg += f"Mutations Applied: {result_dict['num_mutations_applied']}\n"
 
-                if "manifest_path" in result_dict: msg += f"Manifest: {result_dict['manifest_path']}\n"
+                # Add summary statistics if available
+                if success:
+                    msg += f"\n{'='*50}\n"
+                    msg += "TIP: Click 'Open Output Directory' to view all files\n"
+                    
+                if "manifest_path" in result_dict: 
+                    msg += f"\nManifest: {result_dict['manifest_path']}\n"
                 if "output_bam" in result_dict: msg += f"Output BAM: {result_dict['output_bam']}\n"
                 if result_dict.get("output_bam_index"): msg += f"Output BAI: {result_dict['output_bam_index']}\n"
                 if "igv_session_file" in result_dict: msg += f"IGV Session: {result_dict['igv_session_file']}\n"
@@ -155,7 +366,11 @@ class BaseBuddyGUI(customtkinter.CTk):
         entry_widget.grid(row=row, column=1, padx=10, pady=5, sticky="ew")
 
         def browse_callback():
-            path = tkinter.filedialog.askopenfilename() if is_file else tkinter.filedialog.askdirectory()
+            # Use the provided dialog_func if it's callable
+            if callable(dialog_func):
+                path = dialog_func()
+            else:
+                path = tkinter.filedialog.askopenfilename() if is_file else tkinter.filedialog.askdirectory()
             if path:
                 if entry_var:
                     entry_var.set(path)
@@ -167,47 +382,226 @@ class BaseBuddyGUI(customtkinter.CTk):
 
     def create_short_read_tab(self):
         tab = self.short_read_tab
+        # Configure columns for side-by-side layout
         tab.grid_columnconfigure(1, weight=1)
+        tab.grid_columnconfigure(3, weight=1)
         row_idx = 0
 
-        self.sr_ref_fasta_entry = self._create_path_entry(tab, "Reference FASTA:", row_idx, tkinter.filedialog.askopenfilename)
+        # Create custom callback for reference FASTA that auto-detects genome build
+        def browse_reference():
+            path = tkinter.filedialog.askopenfilename(
+                title="Select Reference FASTA",
+                filetypes=[("FASTA files", "*.fa *.fasta *.fna"), ("All files", "*.*")]
+            )
+            if path:
+                self.sr_ref_fasta_entry.delete(0, "end")
+                self.sr_ref_fasta_entry.insert(0, path)
+                # Auto-detect genome build from filename
+                self._auto_detect_genome_build(path)
+            return path
+        
+        self.sr_ref_fasta_entry = self._create_path_entry(tab, "Reference FASTA:", row_idx, browse_reference)
+        if saved_ref := self.settings.get("short_read", {}).get("reference_fasta"):
+            self.sr_ref_fasta_entry.insert(0, saved_ref)
         row_idx += 1
         self.sr_output_root_entry = self._create_path_entry(tab, "Output Root Dir:", row_idx, tkinter.filedialog.askdirectory, is_file=False)
+        if saved_output := self.settings.get("short_read", {}).get("output_root"):
+            self.sr_output_root_entry.insert(0, saved_output)
         row_idx += 1
 
         customtkinter.CTkLabel(master=tab, text="Run Name (optional):").grid(row=row_idx, column=0, padx=10, pady=5, sticky="w")
-        self.sr_run_name_entry = customtkinter.CTkEntry(master=tab); self.sr_run_name_entry.grid(row=row_idx, column=1, padx=10, pady=5, sticky="ew", columnspan=2); row_idx += 1
+        self.sr_run_name_entry = customtkinter.CTkEntry(master=tab)
+        if saved_run_name := self.settings.get("short_read", {}).get("run_name"):
+            self.sr_run_name_entry.insert(0, saved_run_name)
+        self.sr_run_name_entry.grid(row=row_idx, column=1, padx=10, pady=5, sticky="ew", columnspan=2); row_idx += 1
 
+        # ART Platform and Profile on same row
         customtkinter.CTkLabel(master=tab, text="ART Platform:").grid(row=row_idx, column=0, padx=10, pady=5, sticky="w")
-        self.sr_art_platform_var = customtkinter.StringVar(value="illumina")
-        customtkinter.CTkOptionMenu(master=tab, variable=self.sr_art_platform_var, values=["illumina"]).grid(row=row_idx, column=1, padx=10, pady=5, sticky="w"); row_idx += 1
-
-        customtkinter.CTkLabel(master=tab, text="ART Profile:").grid(row=row_idx, column=0, padx=10, pady=5, sticky="w")
-        self.sr_art_profile_var = customtkinter.StringVar(value=DEFAULT_ILLUMINA_PROFILE)
-        customtkinter.CTkOptionMenu(master=tab, variable=self.sr_art_profile_var, values=KNOWN_ART_PROFILES["illumina"]).grid(row=row_idx, column=1, padx=10, pady=5, sticky="w"); row_idx += 1
-
-        customtkinter.CTkLabel(master=tab, text="Read Length:").grid(row=row_idx, column=0, padx=10, pady=5, sticky="w"); self.sr_read_length_entry = customtkinter.CTkEntry(master=tab); self.sr_read_length_entry.insert(0, "150"); self.sr_read_length_entry.grid(row=row_idx, column=1, sticky="ew", columnspan=2, padx=10, pady=5); row_idx+=1
-        customtkinter.CTkLabel(master=tab, text="Depth:").grid(row=row_idx, column=0, padx=10, pady=5, sticky="w"); self.sr_depth_entry = customtkinter.CTkEntry(master=tab); self.sr_depth_entry.insert(0, "50"); self.sr_depth_entry.grid(row=row_idx, column=1, sticky="ew", columnspan=2, padx=10, pady=5); row_idx+=1
-        customtkinter.CTkLabel(master=tab, text="Mean Fragment:").grid(row=row_idx, column=0, padx=10, pady=5, sticky="w"); self.sr_mean_frag_entry = customtkinter.CTkEntry(master=tab); self.sr_mean_frag_entry.insert(0, "400"); self.sr_mean_frag_entry.grid(row=row_idx, column=1, sticky="ew", columnspan=2, padx=10, pady=5); row_idx+=1
-        customtkinter.CTkLabel(master=tab, text="Std Dev Fragment:").grid(row=row_idx, column=0, padx=10, pady=5, sticky="w"); self.sr_std_dev_frag_entry = customtkinter.CTkEntry(master=tab); self.sr_std_dev_frag_entry.insert(0, "50"); self.sr_std_dev_frag_entry.grid(row=row_idx, column=1, sticky="ew", columnspan=2, padx=10, pady=5); row_idx+=1
-
-        customtkinter.CTkLabel(master=tab, text="Genomic Ranges (optional, e.g., chr1:1k-2k):").grid(row=row_idx, column=0, padx=10, pady=5, sticky="w")
-        self.short_sim_ranges_textbox = customtkinter.CTkTextbox(master=tab, height=80, wrap="word")
-        self.short_sim_ranges_textbox.grid(row=row_idx, column=1, padx=10, pady=5, sticky="ew", columnspan=2)
-        self.short_sim_ranges_textbox.insert("1.0", "chr1:1000-2000\nchrM:1-16569") # Example placeholder
+        self.sr_art_platform_var = customtkinter.StringVar(value=self.settings.get("short_read", {}).get("art_platform", "illumina"))
+        customtkinter.CTkOptionMenu(master=tab, variable=self.sr_art_platform_var, values=["illumina"], width=120).grid(row=row_idx, column=1, padx=10, pady=5, sticky="w")
+        
+        customtkinter.CTkLabel(master=tab, text="ART Profile:").grid(row=row_idx, column=2, padx=10, pady=5, sticky="w")
+        self.sr_art_profile_var = customtkinter.StringVar(value=self.settings.get("short_read", {}).get("art_profile", DEFAULT_ILLUMINA_PROFILE))
+        customtkinter.CTkOptionMenu(master=tab, variable=self.sr_art_profile_var, values=KNOWN_ART_PROFILES["illumina"], width=120).grid(row=row_idx, column=3, padx=10, pady=5, sticky="w"); row_idx += 1
+        
+        # Genome build selection
+        customtkinter.CTkLabel(master=tab, text="Genome Build:").grid(row=row_idx, column=0, padx=10, pady=5, sticky="w")
+        self.sr_genome_build_var = customtkinter.StringVar(value=self.settings.get("short_read", {}).get("genome_build", ""))
+        self.sr_genome_build_menu = customtkinter.CTkOptionMenu(master=tab, variable=self.sr_genome_build_var, 
+                                                               values=["", "hg19/GRCh37", "hg38/GRCh38", "T2T-CHM13", "mm10", "mm39", "Other"])
+        self.sr_genome_build_menu.grid(row=row_idx, column=1, padx=10, pady=5, sticky="w")
+        # Custom build entry (shown when "Other" is selected)
+        self.sr_custom_build_entry = customtkinter.CTkEntry(master=tab, placeholder_text="Enter custom build")
+        if saved_custom := self.settings.get("short_read", {}).get("custom_build"):
+            self.sr_custom_build_entry.insert(0, saved_custom)
+        self.sr_custom_build_entry.grid(row=row_idx, column=2, padx=10, pady=5, sticky="w")
+        self.sr_custom_build_entry.grid_remove()  # Initially hidden
+        
+        self.sr_genome_build_var.trace_add("write", self._on_genome_build_change)
         row_idx += 1
 
-        customtkinter.CTkLabel(master=tab, text="Timeout (s):").grid(row=row_idx, column=0, padx=10, pady=5, sticky="w"); self.sr_timeout_entry = customtkinter.CTkEntry(master=tab); self.sr_timeout_entry.insert(0, "3600.0"); self.sr_timeout_entry.grid(row=row_idx, column=1, sticky="ew", columnspan=2, padx=10, pady=5); row_idx+=1
+        # Read Length and Depth on same row
+        customtkinter.CTkLabel(master=tab, text="Read Length:").grid(row=row_idx, column=0, padx=10, pady=5, sticky="w")
+        self.sr_read_length_entry = customtkinter.CTkEntry(master=tab, width=120)
+        self.sr_read_length_entry.insert(0, self.settings.get("short_read", {}).get("read_length", "150"))
+        self.sr_read_length_entry.grid(row=row_idx, column=1, sticky="w", padx=10, pady=5)
+        
+        customtkinter.CTkLabel(master=tab, text="Depth:").grid(row=row_idx, column=2, padx=10, pady=5, sticky="w")
+        self.sr_depth_entry = customtkinter.CTkEntry(master=tab, width=120)
+        self.sr_depth_entry.insert(0, self.settings.get("short_read", {}).get("depth", "50"))
+        self.sr_depth_entry.grid(row=row_idx, column=3, sticky="w", padx=10, pady=5)
+        row_idx += 1
+        # Mean Fragment and Std Dev Fragment on same row
+        customtkinter.CTkLabel(master=tab, text="Mean Fragment:").grid(row=row_idx, column=0, padx=10, pady=5, sticky="w")
+        self.sr_mean_frag_entry = customtkinter.CTkEntry(master=tab, width=120)
+        self.sr_mean_frag_entry.insert(0, self.settings.get("short_read", {}).get("mean_fragment", "400"))
+        self.sr_mean_frag_entry.grid(row=row_idx, column=1, sticky="w", padx=10, pady=5)
+        
+        customtkinter.CTkLabel(master=tab, text="Std Dev Fragment:").grid(row=row_idx, column=2, padx=10, pady=5, sticky="w")
+        self.sr_std_dev_frag_entry = customtkinter.CTkEntry(master=tab, width=120)
+        self.sr_std_dev_frag_entry.insert(0, self.settings.get("short_read", {}).get("std_dev_fragment", "50"))
+        self.sr_std_dev_frag_entry.grid(row=row_idx, column=3, sticky="w", padx=10, pady=5)
+        row_idx += 1
 
-        self.sr_single_end_var = customtkinter.BooleanVar(value=False)
+        customtkinter.CTkLabel(master=tab, text="Genomic Ranges:").grid(row=row_idx, column=0, padx=10, pady=5, sticky="w")
+        self.short_sim_ranges_textbox = customtkinter.CTkTextbox(master=tab, height=80, wrap="word")
+        self.short_sim_ranges_textbox.grid(row=row_idx, column=1, padx=10, pady=5, sticky="ew", columnspan=3)
+        # Use saved ranges, or default based on genome build
+        saved_ranges = self.settings.get("short_read", {}).get("genomic_ranges", "")
+        if saved_ranges:
+            self.short_sim_ranges_textbox.insert("1.0", saved_ranges)
+        else:
+            # Use build-specific example if available
+            build = self.sr_genome_build_var.get()
+            default_example = EXAMPLE_RANGES.get(build, EXAMPLE_RANGES[""])
+            self.short_sim_ranges_textbox.insert("1.0", default_example)
+        row_idx += 1
+
+        customtkinter.CTkLabel(master=tab, text="Timeout (s):").grid(row=row_idx, column=0, padx=10, pady=5, sticky="w"); self.sr_timeout_entry = customtkinter.CTkEntry(master=tab); self.sr_timeout_entry.insert(0, self.settings.get("short_read", {}).get("timeout", "3600.0")); self.sr_timeout_entry.grid(row=row_idx, column=1, sticky="ew", columnspan=2, padx=10, pady=5); row_idx+=1
+
+        self.sr_single_end_var = customtkinter.BooleanVar(value=self.settings.get("short_read", {}).get("single_end", False))
         customtkinter.CTkCheckBox(master=tab, text="Single-End Simulation", variable=self.sr_single_end_var).grid(row=row_idx, column=0, padx=10, pady=5, sticky="w", columnspan=3); row_idx += 1
-        self.sr_overwrite_var = customtkinter.BooleanVar(value=False)
+        self.sr_overwrite_var = customtkinter.BooleanVar(value=self.settings.get("short_read", {}).get("overwrite", False))
         customtkinter.CTkCheckBox(master=tab, text="Overwrite Output", variable=self.sr_overwrite_var).grid(row=row_idx, column=0, padx=10, pady=5, sticky="w", columnspan=3); row_idx += 1
-        self.sr_auto_index_var = customtkinter.BooleanVar(value=True)
+        self.sr_auto_index_var = customtkinter.BooleanVar(value=self.settings.get("short_read", {}).get("auto_index", True))
         customtkinter.CTkCheckBox(master=tab, text="Auto-Index FASTA", variable=self.sr_auto_index_var).grid(row=row_idx, column=0, padx=10, pady=5, sticky="w", columnspan=3); row_idx += 1
+        
+        # Auto-align checkbox
+        self.sr_auto_align_var = customtkinter.BooleanVar(value=self.settings.get("short_read", {}).get("auto_align", False))
+        self.sr_auto_align_checkbox = customtkinter.CTkCheckBox(master=tab, text="Auto-align to BAM", variable=self.sr_auto_align_var, command=self._on_auto_align_toggle)
+        self.sr_auto_align_checkbox.grid(row=row_idx, column=0, padx=10, pady=5, sticky="w", columnspan=3); row_idx += 1
+        
+        # Aligner selection (shown only when auto-align is checked)
+        self.sr_aligner_label = customtkinter.CTkLabel(master=tab, text="Aligner:")
+        self.sr_aligner_label.grid(row=row_idx, column=0, padx=10, pady=5, sticky="w")
+        self.sr_aligner_label.grid_remove()  # Initially hidden
+        
+        self.sr_aligner_var = customtkinter.StringVar(value=self.settings.get("short_read", {}).get("aligner", "bwa"))
+        self.sr_aligner_menu = customtkinter.CTkOptionMenu(master=tab, variable=self.sr_aligner_var, values=["bwa"])
+        self.sr_aligner_menu.grid(row=row_idx, column=1, padx=10, pady=5, sticky="w")
+        self.sr_aligner_menu.grid_remove()  # Initially hidden
+        row_idx += 1
 
         self.run_short_sim_button = customtkinter.CTkButton(master=tab, text="Run Simulation", command=self.run_short_simulation_thread)
         self.run_short_sim_button.grid(row=row_idx, column=0, columnspan=3, padx=10, pady=(10,0))
+        
+        # Check if auto-align was saved as enabled
+        if self.sr_auto_align_var.get():
+            self._on_auto_align_toggle()
+    
+    def _auto_detect_genome_build(self, ref_path: str):
+        """Auto-detect genome build from reference filename and set it in the dropdown"""
+        ref_path_lower = ref_path.lower()
+        
+        # Check for common genome build patterns in filename
+        if "grch38" in ref_path_lower or "hg38" in ref_path_lower:
+            self.sr_genome_build_var.set("hg38/GRCh38")
+            self.update_status("Auto-detected genome build: hg38/GRCh38", clear_first=False)
+        elif "grch37" in ref_path_lower or "hg19" in ref_path_lower or "hs37d5" in ref_path_lower:
+            self.sr_genome_build_var.set("hg19/GRCh37")
+            self.update_status("Auto-detected genome build: hg19/GRCh37", clear_first=False)
+        elif "t2t" in ref_path_lower or "chm13" in ref_path_lower:
+            self.sr_genome_build_var.set("T2T-CHM13")
+            self.update_status("Auto-detected genome build: T2T-CHM13", clear_first=False)
+        elif "mm10" in ref_path_lower:
+            self.sr_genome_build_var.set("mm10")
+            self.update_status("Auto-detected genome build: mm10", clear_first=False)
+        elif "mm39" in ref_path_lower:
+            self.sr_genome_build_var.set("mm39")
+            self.update_status("Auto-detected genome build: mm39", clear_first=False)
+        else:
+            # Could not detect - set to empty
+            self.sr_genome_build_var.set("")
+            self.update_status("Could not auto-detect genome build from filename", is_error=False, clear_first=False)
+    
+    def _suggest_reference_for_build(self, build: str):
+        """Suggest and optionally set reference path based on genome build"""
+        # Get the base directory where BaseBuddy is installed
+        base_dir = Path(__file__).parent.parent.parent
+        
+        current_ref = self.sr_ref_fasta_entry.get()
+        
+        # Only suggest if field is empty
+        if not current_ref:
+            # Check for existing reference files
+            for ref_path in DEFAULT_REFERENCES.get(build, []):
+                full_path = base_dir / ref_path
+                if full_path.exists():
+                    # Found a matching reference file
+                    self.sr_ref_fasta_entry.delete(0, "end")
+                    self.sr_ref_fasta_entry.insert(0, str(full_path))
+                    self.update_status(f"Reference auto-filled for {build}: {full_path.name}", clear_first=False)
+                    break
+        elif self._is_mismatched_reference(current_ref, build):
+            # Warn about potential mismatch but don't change the user's selection
+            self.update_status(f"Warning: Selected reference may not match {build} coordinates", is_error=True, clear_first=False)
+    
+    def _is_mismatched_reference(self, ref_path: str, build: str) -> bool:
+        """Check if the current reference path doesn't match the selected build"""
+        ref_path_lower = ref_path.lower()
+        
+        # Check for build mismatches
+        if build == "hg19/GRCh37":
+            return "grch38" in ref_path_lower or "hg38" in ref_path_lower
+        elif build == "hg38/GRCh38":
+            return "grch37" in ref_path_lower or "hg19" in ref_path_lower or "hs37d5" in ref_path_lower
+        elif build == "mm10":
+            return "mm39" in ref_path_lower
+        elif build == "mm39":
+            return "mm10" in ref_path_lower
+        
+        return False
+
+    def _on_auto_align_toggle(self):
+        """Show/hide aligner options based on auto-align checkbox"""
+        if self.sr_auto_align_var.get():
+            self.sr_aligner_label.grid()
+            self.sr_aligner_menu.grid()
+        else:
+            self.sr_aligner_label.grid_remove()
+            self.sr_aligner_menu.grid_remove()
+    
+    def _on_genome_build_change(self, *args):
+        """Show/hide custom build entry and suggest reference paths based on genome build selection"""
+        build = self.sr_genome_build_var.get()
+        
+        if build == "Other":
+            self.sr_custom_build_entry.grid()
+        else:
+            self.sr_custom_build_entry.grid_remove()
+            
+        # Suggest reference path based on genome build
+        if build and build != "Other" and build in DEFAULT_REFERENCES:
+            self._suggest_reference_for_build(build)
+            
+        # Update genomic ranges example if the textbox is empty or has default values
+        if hasattr(self, 'short_sim_ranges_textbox'):
+            current_ranges = self.short_sim_ranges_textbox.get("1.0", "end-1c").strip()
+            # Check if it's empty or contains a default example
+            if not current_ranges or any(default in current_ranges for default in EXAMPLE_RANGES.values()):
+                example = EXAMPLE_RANGES.get(build, EXAMPLE_RANGES[""])
+                self.short_sim_ranges_textbox.delete("1.0", "end")
+                self.short_sim_ranges_textbox.insert("1.0", example)
 
     def run_short_simulation_thread(self):
         if hasattr(self, 'igv_button_spike'): self.igv_button_spike.configure(state="disabled")
@@ -244,6 +638,13 @@ class BaseBuddyGUI(customtkinter.CTk):
                         self.update_status(msg, is_error=True, clear_first=True)
                         raise ValueError(msg)
                 self.update_status(f"Parsed {len(parsed_genomic_ranges)} genomic ranges.", clear_first=True)
+        
+        # Get genome build
+        genome_build = self.sr_genome_build_var.get()
+        if genome_build == "Other":
+            genome_build = self.sr_custom_build_entry.get().strip()
+        elif not genome_build:
+            genome_build = None
 
         command_params_for_manifest = {
             "id_prefix": "gui_sim_reads", "no_aln_output": False,
@@ -256,6 +657,9 @@ class BaseBuddyGUI(customtkinter.CTk):
             "overwrite_output": self.sr_overwrite_var.get(),
             "output_root_dir": output_root, "run_name": run_name_str,
             "auto_index_fasta": self.sr_auto_index_var.get(),
+            "auto_align": self.sr_auto_align_var.get(),
+            "aligner": self.sr_aligner_var.get() if self.sr_auto_align_var.get() else "bwa",
+            "genome_build": genome_build,
             "genomic_ranges_from_gui": parsed_genomic_ranges # For manifest
         }
         return {
@@ -270,6 +674,9 @@ class BaseBuddyGUI(customtkinter.CTk):
             "art_platform": self.sr_art_platform_var.get(),
             "timeout": float(self.sr_timeout_entry.get()),
             "auto_index_fasta": self.sr_auto_index_var.get(),
+            "auto_align": self.sr_auto_align_var.get(),
+            "aligner": self.sr_aligner_var.get() if self.sr_auto_align_var.get() else "bwa",
+            "genome_build": genome_build,
             "variants_list": None, # Not implemented in this tab's GUI yet
             "genomic_ranges": parsed_genomic_ranges
         }
@@ -608,19 +1015,163 @@ class BaseBuddyGUI(customtkinter.CTk):
 
 
             result = runner_func(**runner_args)
+            logger.info(f"Runner function completed successfully")
             if result_handler_func:
                 result_handler_func(result)
+            logger.info(f"Sending completion message to GUI")
             self.thread_queue.put(("completion", (result, True), button_to_disable))
+            logger.info(f"Completion message sent")
         except (BaseBuddyInputError, BaseBuddyToolError, BaseBuddyFileError, BaseBuddyConfigError, NameError) as e:
             self.thread_queue.put(("error", str(e), button_to_disable))
         except Exception as e:
             tb_str = traceback.format_exc()
             self.thread_queue.put(("error", f"An unexpected error occurred: {str(e)}\nTraceback:\n{tb_str}", button_to_disable))
 
+    def create_apply_signature_tab(self):
+        tab = self.apply_sig_tab
+        tab.grid_columnconfigure(1, weight=1)
+        row_idx = 0
 
-def run_gui():
-    app = BaseBuddyGUI()
-    app.mainloop()
+        # Reference FASTA
+        self.sig_ref_fasta_entry = self._create_path_entry(tab, "Reference FASTA:", row_idx, tkinter.filedialog.askopenfilename)
+        row_idx += 1
+
+        # Signature selection frame
+        sig_frame = customtkinter.CTkFrame(tab)
+        sig_frame.grid(row=row_idx, column=0, columnspan=3, sticky="ew", padx=10, pady=5)
+        sig_frame.grid_columnconfigure(1, weight=1)
+        row_idx += 1
+
+        # Bundled or custom radio
+        self.sig_source_var = tkinter.StringVar(value="bundled")
+        
+        bundled_radio = customtkinter.CTkRadioButton(sig_frame, text="Bundled Signature", 
+                                                    variable=self.sig_source_var, value="bundled",
+                                                    command=self._on_sig_source_change)
+        bundled_radio.grid(row=0, column=0, padx=5, pady=5, sticky="w")
+        
+        custom_radio = customtkinter.CTkRadioButton(sig_frame, text="Custom File", 
+                                                   variable=self.sig_source_var, value="custom",
+                                                   command=self._on_sig_source_change)
+        custom_radio.grid(row=0, column=1, padx=5, pady=5, sticky="w")
+
+        # Bundled type selection
+        self.sig_type_label = customtkinter.CTkLabel(sig_frame, text="Signature Type:")
+        self.sig_type_label.grid(row=1, column=0, padx=5, pady=5, sticky="e")
+        
+        self.sig_type_var = tkinter.StringVar(value="sbs")
+        self.sig_type_menu = customtkinter.CTkOptionMenu(sig_frame, variable=self.sig_type_var,
+                                                        values=["sbs", "dbs", "id"])
+        self.sig_type_menu.grid(row=1, column=1, padx=5, pady=5, sticky="ew")
+
+        # Signature name
+        self.sig_name_label = customtkinter.CTkLabel(sig_frame, text="Signature Name:")
+        self.sig_name_label.grid(row=2, column=0, padx=5, pady=5, sticky="e")
+        
+        self.sig_name_entry = customtkinter.CTkEntry(sig_frame, placeholder_text="e.g., SBS1")
+        self.sig_name_entry.grid(row=2, column=1, padx=5, pady=5, sticky="ew")
+        self.sig_name_entry.insert(0, "SBS1")
+
+        # Custom file entry (hidden by default)
+        self.sig_file_label = customtkinter.CTkLabel(tab, text="Signature File:")
+        self.sig_file_entry = self._create_path_entry(tab, "Signature File:", row_idx, tkinter.filedialog.askopenfilename)
+        row_idx += 1
+        
+        # Initially hide custom file selector
+        self.sig_file_label.grid_remove()
+        self.sig_file_entry.grid_remove()
+
+        # Output file
+        self.sig_output_entry = self._create_path_entry(tab, "Output FASTA:", row_idx, tkinter.filedialog.asksaveasfilename)
+        row_idx += 1
+
+        # Number of mutations
+        self.sig_num_mut_label = customtkinter.CTkLabel(tab, text="Number of Mutations:")
+        self.sig_num_mut_label.grid(row=row_idx, column=0, padx=10, pady=5, sticky="e")
+        
+        self.sig_num_mut_entry = customtkinter.CTkEntry(tab, placeholder_text="1000")
+        self.sig_num_mut_entry.grid(row=row_idx, column=1, padx=10, pady=5, sticky="ew")
+        self.sig_num_mut_entry.insert(0, "1000")
+        row_idx += 1
+
+        # Seed
+        self.sig_seed_label = customtkinter.CTkLabel(tab, text="Random Seed:")
+        self.sig_seed_label.grid(row=row_idx, column=0, padx=10, pady=5, sticky="e")
+        
+        self.sig_seed_entry = customtkinter.CTkEntry(tab, placeholder_text="42")
+        self.sig_seed_entry.grid(row=row_idx, column=1, padx=10, pady=5, sticky="ew")
+        self.sig_seed_entry.insert(0, "42")
+        row_idx += 1
+
+        # Run button
+        self.run_apply_sig_button = customtkinter.CTkButton(tab, text="Apply Signature", 
+                                                           command=self.on_apply_signature_click)
+        self.run_apply_sig_button.grid(row=row_idx, column=0, columnspan=3, padx=10, pady=20)
+
+    def _on_sig_source_change(self):
+        """Toggle visibility of bundled vs custom signature options"""
+        if self.sig_source_var.get() == "bundled":
+            # Show bundled options
+            self.sig_type_label.grid()
+            self.sig_type_menu.grid()
+            self.sig_name_label.grid()
+            self.sig_name_entry.grid()
+            # Hide custom file
+            self.sig_file_label.grid_remove()
+            self.sig_file_entry.grid_remove()
+        else:
+            # Hide bundled options
+            self.sig_type_label.grid_remove()
+            self.sig_type_menu.grid_remove()
+            # Show custom file and name
+            self.sig_file_label.grid(row=3, column=0, padx=10, pady=5, sticky="e")
+            self.sig_file_entry.grid(row=3, column=1, padx=10, pady=5, sticky="ew")
+
+    def on_apply_signature_click(self):
+        self._start_runner_thread(self.run_apply_sig_button, src_bb_runner.apply_signature_to_fasta,
+                                self._get_apply_signature_params)
+
+    def _get_apply_signature_params(self):
+        ref_fasta = self.sig_ref_fasta_entry.get().strip()
+        if not ref_fasta:
+            raise ValueError("Reference FASTA is required")
+        
+        output_fasta = self.sig_output_entry.get().strip()
+        if not output_fasta:
+            output_fasta = str(Path(ref_fasta).parent / "mutated.fa")
+        
+        num_mutations = int(self.sig_num_mut_entry.get() or "1000")
+        seed = int(self.sig_seed_entry.get() or "42")
+        
+        params = {
+            "reference_fasta": ref_fasta,
+            "output_fasta": output_fasta,
+            "num_mutations": num_mutations,
+            "seed": seed
+        }
+        
+        if self.sig_source_var.get() == "bundled":
+            sig_type = self.sig_type_var.get()
+            sig_name = self.sig_name_entry.get().strip()
+            if not sig_name:
+                raise ValueError("Signature name is required")
+            
+            # Get bundled signature file path
+            sig_file = sig_utils.get_bundled_signature_path(sig_type)
+            params["signature_file"] = str(sig_file)
+            params["signature_name"] = sig_name
+        else:
+            sig_file = self.sig_file_entry.get().strip()
+            if not sig_file:
+                raise ValueError("Signature file is required")
+            sig_name = self.sig_name_entry.get().strip()
+            if not sig_name:
+                raise ValueError("Signature name is required")
+            
+            params["signature_file"] = sig_file
+            params["signature_name"] = sig_name
+        
+        return params
 
     def create_germline_sim_tab(self):
         tab = self.germline_sim_tab
@@ -1051,7 +1602,11 @@ def run_gui():
         else:
             self.update_status("No output directory from a successful run is available to open.", is_error=True)
 
+
+def run_gui():
+    app = BaseBuddyGUI()
+    app.mainloop()
+
+
 if __name__ == "__main__":
     run_gui()
-
-[end of src/basebuddy/gui/main_app.py]

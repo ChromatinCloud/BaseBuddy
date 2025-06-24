@@ -58,11 +58,17 @@ def simulate_short(
     timeout: float = 3600.0,
     auto_index_fasta: bool = True,
     variants_list: Optional[List[Dict[str, Any]]] = None,
-    genomic_ranges: Optional[List[str]] = None
+    genomic_ranges: Optional[List[str]] = None,
+    auto_align: bool = False,
+    aligner: str = "bwa",
+    output_bam: Optional[str] = None,
+    genome_build: Optional[str] = None
 ) -> Dict[str, Any]:
 
     effective_run_name = run_name if run_name else bb_utils.generate_unique_run_name(f"simulate_short_{art_platform}")
     logger.info(f"Initiating short read simulation for run: {effective_run_name}")
+    if genome_build:
+        logger.info(f"Genome build: {genome_build}")
 
     temp_mutated_fasta_path: Optional[Path] = None
     temp_subset_fasta_path: Optional[Path] = None
@@ -76,7 +82,10 @@ def simulate_short(
             "mean_fragment_length": mean_fragment_length, "std_dev_fragment_length": std_dev_fragment_length,
             "is_paired_end": is_paired_end, "art_platform": art_platform,
             "auto_index_fasta": auto_index_fasta, "timeout": timeout,
-            "output_root_dir": str(output_root_dir), "overwrite_output": overwrite_output
+            "output_root_dir": str(output_root_dir), "overwrite_output": overwrite_output,
+            "auto_align": auto_align, "aligner": aligner if auto_align else None,
+            "output_bam": output_bam if auto_align else None,
+            "genome_build": genome_build
         })
         id_prefix = manifest_params.get("id_prefix", f"simulated_{art_platform}_reads")
         manifest_params["id_prefix"] = id_prefix
@@ -260,6 +269,140 @@ def simulate_short(
             if aln_path.exists():
                 bb_utils.ensure_file_exists(aln_path, "ART Alignment ALN")
                 output_files_manifest.append({"name": "ART Alignment ALN", "path": aln_path.name, "type": "ALN_ART"})
+
+        # Auto-align if requested
+        if auto_align:
+            logger.info(f"Auto-aligning reads with {aligner}...")
+            logger.debug(f"Current reference for alignment: {current_reference_for_art}")
+            logger.debug(f"Original reference: {reference_fasta}")
+            
+            # Determine output BAM path
+            if output_bam:
+                bam_path = Path(output_bam)
+                if not bam_path.is_absolute():
+                    bam_path = run_output_dir / bam_path
+            else:
+                # Generate BAM name from genomic ranges if provided
+                if genomic_ranges:
+                    # Use first range for naming, sanitize for filename
+                    first_range = genomic_ranges[0]
+                    # Convert chr1:1000-2000 to chr1_1000_2000
+                    safe_range = first_range.replace(':', '_').replace('-', '_').replace(',', '')
+                    bam_name = f"{safe_range}_aligned.bam"
+                else:
+                    bam_name = f"{art_output_prefix_path.name}_aligned.bam"
+                bam_path = run_output_dir / bam_name
+            
+            # Build alignment command
+            if aligner.lower() == "bwa":
+                # Check if BWA is available
+                try:
+                    bwa_cmd = bb_utils.Command("bwa")
+                except bb_utils.BaseBuddyConfigError:
+                    raise bb_utils.BaseBuddyConfigError(
+                        f"BWA not found in PATH but required for auto-align",
+                        details="Install BWA with: conda install -c bioconda bwa"
+                    )
+                
+                # Check if reference is indexed (use the actual reference used for simulation)
+                align_reference = str(current_reference_for_art)
+                bwt_file = Path(align_reference).with_suffix(".fa.bwt")
+                if not bwt_file.exists():
+                    logger.info(f"Creating BWA index for reference: {Path(align_reference).name}...")
+                    bwa_index = bb_utils.Command("bwa")
+                    bwa_index.parts.extend(["index", align_reference])
+                    bb_utils.run_external_cmd(bwa_index.get_command_parts(), timeout_seconds=timeout, stream_output=True)
+                
+                # Run BWA alignment
+                sam_path = bam_path.with_suffix(".sam")
+                
+                if is_paired_end:
+                    r1_path = art_output_prefix_path.with_name(art_output_prefix_path.name + "1.fq")
+                    r2_path = art_output_prefix_path.with_name(art_output_prefix_path.name + "2.fq")
+                    bwa_mem = bb_utils.Command("bwa")
+                    bwa_mem.parts.extend(["mem", "-t", "4", "-o", str(sam_path), align_reference, str(r1_path), str(r2_path)])
+                else:
+                    r_path = art_output_prefix_path.with_suffix(".fq")
+                    bwa_mem = bb_utils.Command("bwa")
+                    bwa_mem.parts.extend(["mem", "-t", "4", "-o", str(sam_path), align_reference, str(r_path)])
+                
+                # Pipe to samtools sort
+                try:
+                    samtools_cmd = bb_utils.Command("samtools")
+                except bb_utils.BaseBuddyConfigError:
+                    raise bb_utils.BaseBuddyConfigError(
+                        f"samtools not found in PATH but required for auto-align",
+                        details="Install samtools with: conda install -c bioconda samtools"
+                    )
+                
+                # Run BWA alignment
+                bb_utils.run_external_cmd(bwa_mem.get_command_parts(), timeout_seconds=timeout, stream_output=True, cwd=run_output_dir)
+                
+                # Sort SAM to BAM
+                samtools_sort = bb_utils.Command("samtools")
+                samtools_sort.parts.extend(["sort", "-o", str(bam_path), str(sam_path)])
+                bb_utils.run_external_cmd(samtools_sort.get_command_parts(), timeout_seconds=timeout, stream_output=True, cwd=run_output_dir)
+                
+                # Clean up SAM file
+                sam_path.unlink(missing_ok=True)
+                
+                # Fix BAM header if we used a subset reference
+                if genomic_ranges and len(genomic_ranges) > 0:
+                    logger.info("Fixing BAM header for IGV compatibility...")
+                    # Extract chromosome name from first range
+                    first_range = genomic_ranges[0]
+                    chrom = first_range.split(':')[0]
+                    
+                    # Create a header fix using samtools reheader
+                    temp_header = bam_path.with_suffix('.header.sam')
+                    fixed_bam = bam_path.with_suffix('.fixed.bam')
+                    
+                    # Get current header
+                    samtools_view = bb_utils.Command("samtools")
+                    samtools_view.parts.extend(["view", "-H", str(bam_path)])
+                    result = subprocess.run(samtools_view.get_command_parts(), capture_output=True, text=True)
+                    
+                    if result.returncode == 0:
+                        # Replace the range with just the chromosome name in the header
+                        fixed_header = result.stdout
+                        for range_str in genomic_ranges:
+                            chrom_name = range_str.split(':')[0]
+                            fixed_header = fixed_header.replace(f"SN:{range_str}", f"SN:{chrom_name}")
+                        
+                        # Write fixed header
+                        with open(temp_header, 'w') as f:
+                            f.write(fixed_header)
+                        
+                        # Apply fixed header
+                        samtools_reheader = bb_utils.Command("samtools")
+                        samtools_reheader.parts.extend(["reheader", str(temp_header), str(bam_path)])
+                        with open(fixed_bam, 'wb') as f:
+                            reheader_result = subprocess.run(samtools_reheader.get_command_parts(), stdout=f)
+                        
+                        if reheader_result.returncode == 0:
+                            # Replace original with fixed
+                            bam_path.unlink()
+                            fixed_bam.rename(bam_path)
+                            logger.info("BAM header fixed for IGV compatibility")
+                        
+                        # Clean up temp files
+                        temp_header.unlink(missing_ok=True)
+                        fixed_bam.unlink(missing_ok=True)
+                
+            else:
+                raise bb_utils.BaseBuddyInputError(f"Unsupported aligner: {aligner}. Only 'bwa' is currently supported.")
+            
+            # Index the BAM
+            logger.info("Indexing BAM file...")
+            samtools_index = bb_utils.Command("samtools")
+            samtools_index.parts.extend(["index", str(bam_path)])
+            bb_utils.run_external_cmd(samtools_index.get_command_parts(), timeout_seconds=300, stream_output=True)
+            
+            # Add BAM to output manifest
+            output_files_manifest.append({"name": "Aligned BAM", "path": bam_path.name, "type": "BAM"})
+            output_files_manifest.append({"name": "BAM Index", "path": f"{bam_path.name}.bai", "type": "BAI"})
+            
+            logger.info(f"Alignment complete: {bam_path}")
 
         manifest_path = run_output_dir / "manifest.json"
         bb_utils.write_run_manifest(
