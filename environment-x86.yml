@@ -1,0 +1,22 @@
+name: basebuddy-x86
+channels:
+  - conda-forge
+  - bioconda
+dependencies:
+  - python>=3.10,<3.12
+  
+  # x86_64-only bioinformatics tools
+  - bamsurgeon                # Includes addsnv.py, addindel.py
+  - exonerate                 # Alignment tool for BAMSurgeon
+  - velvet                    # De novo assembler
+  - wgsim                     # Read simulator
+  - nanosim                   # Nanopore simulator
+  - last                      # LAST aligner
+  - htseq                     # High-throughput sequencing
+  - genometools               # Genome analysis toolkit
+
+  # Dependencies that these tools need
+  - pysam
+  - numpy
+  - scipy
+  - scikit-learn

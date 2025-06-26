@@ -219,14 +219,20 @@ class BaseBuddyGUI(customtkinter.CTk):
     def get_spike_variants_settings(self) -> Dict[str, Any]:
         """Get current settings from spike variants tab"""
         return {
-            "input_bam": self.spike_input_bam_entry.get(),
-            "variants_vcf": self.spike_variants_vcf_entry.get(),
-            "reference_fasta": self.spike_ref_fasta_entry.get(),
-            "output_root": self.spike_output_root_entry.get(),
-            "run_name": self.spike_run_name_entry.get(),
-            "sample_name": self.spike_sample_name_entry.get(),
-            "keep_original": self.spike_keep_original_var.get(),
-            "overwrite": self.spike_overwrite_var.get()
+            "reference_fasta": self.sv_ref_fasta_entry.get() if hasattr(self, "sv_ref_fasta_entry") else "",
+            "input_bam": self.sv_input_bam_entry.get() if hasattr(self, "sv_input_bam_entry") else "",
+            "manual_variants": self.sv_manual_variants_textbox.get("1.0", "end-1c") if hasattr(self, "sv_manual_variants_textbox") else "",
+            "vcf_file": self.sv_vcf_entry.get() if hasattr(self, "sv_vcf_entry") else "",
+            "picard_jar": self.sv_picard_jar_entry.get() if hasattr(self, "sv_picard_jar_entry") else "",
+            "vaf": self.sv_vaf_entry.get() if hasattr(self, "sv_vaf_entry") else "0.05",
+            "seed": self.sv_seed_entry.get() if hasattr(self, "sv_seed_entry") else "0",
+            "strand_bias": self.sv_strand_bias_entry.get() if hasattr(self, "sv_strand_bias_entry") else "0.5",
+            "output_root": self.sv_output_root_entry.get() if hasattr(self, "sv_output_root_entry") else "",
+            "run_name": self.sv_run_name_entry.get() if hasattr(self, "sv_run_name_entry") else "",
+            "output_prefix": self.sv_output_prefix_entry.get() if hasattr(self, "sv_output_prefix_entry") else "spiked_output",
+            "overwrite": self.sv_overwrite_var.get() if hasattr(self, "sv_overwrite_var") else False,
+            "auto_index_bam": self.sv_auto_index_input_bam_var.get() if hasattr(self, "sv_auto_index_input_bam_var") else True,
+            "auto_index_fasta": self.sv_auto_index_fasta_var.get() if hasattr(self, "sv_auto_index_fasta_var") else True
         }
     
     def get_long_read_settings(self) -> Dict[str, Any]:
@@ -357,25 +363,45 @@ class BaseBuddyGUI(customtkinter.CTk):
     
     def apply_spike_variants_settings(self, settings: Dict[str, Any]):
         """Apply saved settings to spike variants tab"""
-        if 'reference_fasta' in settings and hasattr(self, 'sp_ref_fasta_entry'):
-            self.sp_ref_fasta_entry.delete(0, 'end')
-            self.sp_ref_fasta_entry.insert(0, settings['reference_fasta'])
-        if 'output_root' in settings and hasattr(self, 'sp_output_root_entry'):
-            self.sp_output_root_entry.delete(0, 'end')
-            self.sp_output_root_entry.insert(0, settings['output_root'])
-        if 'run_name' in settings and hasattr(self, 'sp_run_name_entry'):
-            self.sp_run_name_entry.delete(0, 'end')
-            self.sp_run_name_entry.insert(0, settings['run_name'])
-        if 'vcf_file' in settings and hasattr(self, 'sp_vcf_file_entry'):
-            self.sp_vcf_file_entry.delete(0, 'end')
-            self.sp_vcf_file_entry.insert(0, settings['vcf_file'])
-        if 'spike_percentage' in settings and hasattr(self, 'sp_spike_percentage_entry'):
-            self.sp_spike_percentage_entry.delete(0, 'end')
-            self.sp_spike_percentage_entry.insert(0, settings['spike_percentage'])
-        if 'overwrite' in settings and hasattr(self, 'sp_overwrite_var'):
-            self.sp_overwrite_var.set(settings['overwrite'])
-        if 'auto_index' in settings and hasattr(self, 'sp_auto_index_var'):
-            self.sp_auto_index_var.set(settings['auto_index'])
+        if 'reference_fasta' in settings and hasattr(self, 'sv_ref_fasta_entry'):
+            self.sv_ref_fasta_entry.delete(0, 'end')
+            self.sv_ref_fasta_entry.insert(0, settings['reference_fasta'])
+        if 'input_bam' in settings and hasattr(self, 'sv_input_bam_entry'):
+            self.sv_input_bam_entry.delete(0, 'end')
+            self.sv_input_bam_entry.insert(0, settings['input_bam'])
+        if 'manual_variants' in settings and hasattr(self, 'sv_manual_variants_textbox'):
+            self.sv_manual_variants_textbox.delete("1.0", "end")
+            self.sv_manual_variants_textbox.insert("1.0", settings['manual_variants'])
+        if 'vcf_file' in settings and hasattr(self, 'sv_vcf_entry'):
+            self.sv_vcf_entry.delete(0, 'end')
+            self.sv_vcf_entry.insert(0, settings['vcf_file'])
+        if 'picard_jar' in settings and hasattr(self, 'sv_picard_jar_entry'):
+            self.sv_picard_jar_entry.delete(0, 'end')
+            self.sv_picard_jar_entry.insert(0, settings['picard_jar'])
+        if 'vaf' in settings and hasattr(self, 'sv_vaf_entry'):
+            self.sv_vaf_entry.delete(0, 'end')
+            self.sv_vaf_entry.insert(0, settings['vaf'])
+        if 'seed' in settings and hasattr(self, 'sv_seed_entry'):
+            self.sv_seed_entry.delete(0, 'end')
+            self.sv_seed_entry.insert(0, settings['seed'])
+        if 'strand_bias' in settings and hasattr(self, 'sv_strand_bias_entry'):
+            self.sv_strand_bias_entry.delete(0, 'end')
+            self.sv_strand_bias_entry.insert(0, settings['strand_bias'])
+        if 'output_root' in settings and hasattr(self, 'sv_output_root_entry'):
+            self.sv_output_root_entry.delete(0, 'end')
+            self.sv_output_root_entry.insert(0, settings['output_root'])
+        if 'run_name' in settings and hasattr(self, 'sv_run_name_entry'):
+            self.sv_run_name_entry.delete(0, 'end')
+            self.sv_run_name_entry.insert(0, settings['run_name'])
+        if 'output_prefix' in settings and hasattr(self, 'sv_output_prefix_entry'):
+            self.sv_output_prefix_entry.delete(0, 'end')
+            self.sv_output_prefix_entry.insert(0, settings['output_prefix'])
+        if 'overwrite' in settings and hasattr(self, 'sv_overwrite_var'):
+            self.sv_overwrite_var.set(settings['overwrite'])
+        if 'auto_index_bam' in settings and hasattr(self, 'sv_auto_index_input_bam_var'):
+            self.sv_auto_index_input_bam_var.set(settings['auto_index_bam'])
+        if 'auto_index_fasta' in settings and hasattr(self, 'sv_auto_index_fasta_var'):
+            self.sv_auto_index_fasta_var.set(settings['auto_index_fasta'])
     
     def apply_long_read_settings(self, settings: Dict[str, Any]):
         """Apply saved settings to long read tab"""
@@ -945,9 +971,20 @@ class BaseBuddyGUI(customtkinter.CTk):
             self.update_status("No simulation results available to send.", is_error=True, clear_first=True)
             return
         
-        # Get BAM files from results
+        # Get BAM files from results and construct full paths
         output_files = self.short_sim_results.get("output_files", [])
-        bam_files = [f["path"] for f in output_files if f["type"] == "BAM"]
+        output_dir = self.short_sim_results.get("output_directory", "")
+        
+        # Construct full paths for BAM files
+        bam_files = []
+        for f in output_files:
+            if f["type"] == "BAM":
+                # If path is relative (just filename), join with output directory
+                file_path = f["path"]
+                if not Path(file_path).is_absolute():
+                    file_path = str(Path(output_dir) / file_path)
+                bam_files.append(file_path)
+        
         ref_fasta = self.short_sim_results.get("reference_fasta_used") or self.sr_ref_fasta_entry.get()
         
         if bam_files and ref_fasta:
@@ -964,15 +1001,19 @@ class BaseBuddyGUI(customtkinter.CTk):
         self.sv_ref_fasta_entry = self._create_path_entry(tab, "Reference FASTA:", row_idx, tkinter.filedialog.askopenfilename)
         row_idx += 1
 
-        customtkinter.CTkLabel(master=tab, text="Input BAM(s) (one per line):").grid(row=row_idx, column=0, padx=10, pady=5, sticky="nw")
-        self.sv_input_bams_textbox = customtkinter.CTkTextbox(master=tab, height=80, wrap="word")
-        self.sv_input_bams_textbox.grid(row=row_idx, column=1, padx=10, pady=5, sticky="ew", columnspan=2)
+        self.sv_input_bam_entry = self._create_path_entry(tab, "Input BAM:", row_idx, tkinter.filedialog.askopenfilename)
         row_idx += 1
 
-        self.sv_snp_vcf_entry = self._create_path_entry(tab, "SNP VCF File (optional):", row_idx, tkinter.filedialog.askopenfilename)
+        customtkinter.CTkLabel(master=tab, text="Manual Variants (VCF format):").grid(row=row_idx, column=0, padx=10, pady=5, sticky="nw")
+        self.sv_manual_variants_textbox = customtkinter.CTkTextbox(master=tab, height=80, wrap="word")
+        self.sv_manual_variants_textbox.grid(row=row_idx, column=1, padx=10, pady=5, sticky="ew", columnspan=2)
+        # Add placeholder text
+        self.sv_manual_variants_textbox.insert("1.0", "# Enter variants in VCF format (tab-separated):\n# CHROM  POS  ID  REF  ALT  QUAL  FILTER  INFO\n# Example:\n# 7\t140453136\t.\tT\tA\t.\t.\t.")
         row_idx += 1
-        self.sv_indel_vcf_entry = self._create_path_entry(tab, "Indel VCF File (optional):", row_idx, tkinter.filedialog.askopenfilename)
+
+        self.sv_vcf_entry = self._create_path_entry(tab, "Input VCF (optional):", row_idx, tkinter.filedialog.askopenfilename)
         row_idx += 1
+        
         self.sv_picard_jar_entry = self._create_path_entry(tab, "Picard JAR Path (optional):", row_idx, tkinter.filedialog.askopenfilename)
         row_idx += 1
 
@@ -986,6 +1027,13 @@ class BaseBuddyGUI(customtkinter.CTk):
         self.sv_seed_entry = customtkinter.CTkEntry(master=tab)
         self.sv_seed_entry.insert(0, "0") # Default seed
         self.sv_seed_entry.grid(row=row_idx, column=1, padx=10, pady=5, sticky="ew", columnspan=2)
+        row_idx += 1
+
+        customtkinter.CTkLabel(master=tab, text="Strand Bias:").grid(row=row_idx, column=0, padx=10, pady=5, sticky="w")
+        self.sv_strand_bias_entry = customtkinter.CTkEntry(master=tab)
+        self.sv_strand_bias_entry.insert(0, "0.5") # Default 0.5 = no bias
+        self.sv_strand_bias_entry.grid(row=row_idx, column=1, padx=10, pady=5, sticky="ew")
+        customtkinter.CTkLabel(master=tab, text="(0=all reverse, 0.5=no bias, 1=all forward)", font=("Arial", 10)).grid(row=row_idx, column=2, padx=5, pady=5, sticky="w")
         row_idx += 1
 
         self.sv_output_root_entry = self._create_path_entry(tab, "Output Root Dir:", row_idx, tkinter.filedialog.askdirectory, is_file=False)
@@ -1033,18 +1081,46 @@ class BaseBuddyGUI(customtkinter.CTk):
         if not output_root:
             self.update_status("Output Root Directory is required.", is_error=True, clear_first=True); return None
 
-        input_bams_text = self.sv_input_bams_textbox.get("1.0", "end-1c").strip()
-        input_bam_paths_str = [line.strip() for line in input_bams_text.splitlines() if line.strip()]
-        if not input_bam_paths_str:
-            self.update_status("At least one Input BAM path is required.", is_error=True, clear_first=True)
+        # Get input BAM from new entry widget
+        input_bam_path = self.sv_input_bam_entry.get().strip()
+        if not input_bam_path:
+            self.update_status("Input BAM path is required.", is_error=True, clear_first=True)
             return None
+        input_bam_paths_str = [input_bam_path]  # Keep as list for compatibility
 
-        snp_vcf_str = self.sv_snp_vcf_entry.get().strip() or None
-        indel_vcf_str = self.sv_indel_vcf_entry.get().strip() or None
+        # Get variants from manual entry or VCF file
+        manual_variants_text = self.sv_manual_variants_textbox.get("1.0", "end-1c").strip()
+        vcf_file_str = self.sv_vcf_entry.get().strip() or None
+        
+        # Parse manual variants if provided
+        temp_vcf_path = None
+        if manual_variants_text:
+            # Remove comment lines and empty lines
+            variant_lines = [line for line in manual_variants_text.splitlines() 
+                           if line.strip() and not line.strip().startswith('#')]
+            
+            if variant_lines:
+                # Create temporary VCF file from manual variants
+                import tempfile
+                with tempfile.NamedTemporaryFile(mode='w', suffix='.vcf', delete=False) as f:
+                    f.write("##fileformat=VCFv4.2\n")
+                    f.write("##source=BaseBuddy_Manual_Entry\n")
+                    f.write("#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\n")
+                    for line in variant_lines:
+                        f.write(line + "\n")
+                    temp_vcf_path = f.name
 
-        if not snp_vcf_str and not indel_vcf_str:
-            self.update_status("At least one of SNP VCF or Indel VCF must be provided.", is_error=True, clear_first=True)
+        # Use manual variants VCF if created, otherwise use provided VCF file
+        variants_vcf = temp_vcf_path or vcf_file_str
+        
+        if not variants_vcf:
+            self.update_status("Either manual variants or a VCF file must be provided.", is_error=True, clear_first=True)
             return None
+        
+        # For now, use the same VCF for both SNPs and indels
+        # The backend will handle parsing them appropriately
+        snp_vcf_str = variants_vcf
+        indel_vcf_str = variants_vcf
 
         picard_jar_str = self.sv_picard_jar_entry.get().strip() or None
 
@@ -1057,6 +1133,7 @@ class BaseBuddyGUI(customtkinter.CTk):
 
         vaf_val_str = self.sv_vaf_entry.get()
         seed_val_str = self.sv_seed_entry.get()
+        strand_bias_str = self.sv_strand_bias_entry.get()
         try:
             vaf_val = float(vaf_val_str)
             if not (0 < vaf_val <= 1.0):
@@ -1067,6 +1144,12 @@ class BaseBuddyGUI(customtkinter.CTk):
             seed_val = int(seed_val_str)
         except ValueError:
             self.update_status(f"Invalid Seed value: '{seed_val_str}'. Must be an integer.", is_error=True, clear_first=True); return None
+        try:
+            strand_bias_val = float(strand_bias_str)
+            if not (0 <= strand_bias_val <= 1.0):
+                self.update_status("Strand bias must be between 0 and 1.0.", is_error=True, clear_first=True); return None
+        except ValueError:
+            self.update_status(f"Invalid Strand Bias value: '{strand_bias_str}'. Must be a number.", is_error=True, clear_first=True); return None
 
         command_params_for_manifest = {
             "reference_fasta": ref_fasta,
@@ -1080,6 +1163,7 @@ class BaseBuddyGUI(customtkinter.CTk):
             "run_name": run_name_str,
             "vaf": vaf_val,
             "seed": seed_val,
+            "strand_bias": strand_bias_val,
             "picard_jar": picard_jar_str,
             "snp_vcf_path": snp_vcf_str,
             "indel_vcf_path": indel_vcf_str
@@ -1224,9 +1308,20 @@ class BaseBuddyGUI(customtkinter.CTk):
             self.update_status("No simulation results available to send.", is_error=True, clear_first=True)
             return
         
-        # Get BAM files from results
+        # Get BAM files from results and construct full paths
         output_files = self.long_sim_results.get("output_files", [])
-        bam_files = [f["path"] for f in output_files if f["type"] == "BAM"]
+        output_dir = self.long_sim_results.get("output_directory", "")
+        
+        # Construct full paths for BAM files
+        bam_files = []
+        for f in output_files:
+            if f["type"] == "BAM":
+                # If path is relative (just filename), join with output directory
+                file_path = f["path"]
+                if not Path(file_path).is_absolute():
+                    file_path = str(Path(output_dir) / file_path)
+                bam_files.append(file_path)
+        
         ref_fasta = self.long_sim_results.get("reference_fasta_used") or self.lr_ref_fasta_entry.get()
         
         if bam_files and ref_fasta:

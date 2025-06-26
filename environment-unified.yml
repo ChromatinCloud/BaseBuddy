@@ -1,0 +1,47 @@
+name: basebuddy
+channels:
+  - conda-forge
+  - bioconda
+dependencies:
+  - python>=3.10,<3.12
+  - pip
+
+  # All tools - will use Rosetta 2 where needed
+  - pysam
+  - numpy
+  - scipy
+  - pandas
+  - tk
+  
+  # Alignment Tools
+  - bwa
+  - samtools
+  - minimap2
+  - bcftools
+  - bedtools
+
+  # Read Simulation
+  - art
+  
+  # Variant Manipulation (x86_64 only)
+  - bamsurgeon
+  - exonerate
+  - velvet
+  - wgsim
+  
+  # Long Read Simulation (x86_64 only)
+  - nanosim
+  - last
+  
+  # Additional packages
+  - biopython
+  - matplotlib
+  - seaborn
+  - scikit-learn
+  - picard
+  - openjdk
+  - perl
+
+pip:
+  - customtkinter
+  - typer

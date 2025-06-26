@@ -304,17 +304,32 @@ def simulate_short(
                         details="Install BWA with: conda install -c bioconda bwa"
                     )
                 
-                # Use the subset reference but we'll fix the chromosome names in post-processing
-                align_reference = str(current_reference_for_art)
-                logger.info(f"Using reference for alignment: {Path(align_reference).name}")
+                # Use the full original reference for alignment to ensure IGV compatibility
+                # This way BAM files will have standard chromosome names
+                align_reference = str(original_reference_path_obj)
+                logger.info(f"Using full reference for alignment: {Path(align_reference).name}")
                 
-                # Check if reference is indexed
-                bwt_file = Path(align_reference).with_suffix(".fa.bwt")
-                if not bwt_file.exists():
+                # Check if reference is indexed (BWA requires multiple index files)
+                bwa_index_extensions = [".amb", ".ann", ".bwt", ".pac", ".sa"]
+                missing_index_files = []
+                for ext in bwa_index_extensions:
+                    index_file = Path(str(align_reference) + ext)
+                    if not index_file.exists():
+                        missing_index_files.append(ext)
+                
+                if missing_index_files:
+                    logger.info(f"Missing BWA index files: {', '.join(missing_index_files)}")
                     logger.info(f"Creating BWA index for reference: {Path(align_reference).name}...")
+                    # Check reference size to adjust timeout for large genomes
+                    ref_size_gb = Path(align_reference).stat().st_size / (1024**3)
+                    index_timeout = timeout
+                    if ref_size_gb > 1.0:  # Large reference (>1GB)
+                        index_timeout = max(7200, timeout)  # 2 hours minimum
+                        logger.info(f"Large reference detected ({ref_size_gb:.1f}GB). Using extended timeout for indexing...")
+                    
                     bwa_index = bb_utils.Command("bwa")
                     bwa_index.parts.extend(["index", align_reference])
-                    bb_utils.run_external_cmd(bwa_index.get_command_parts(), timeout_seconds=timeout, stream_output=True)
+                    bb_utils.run_external_cmd(bwa_index.get_command_parts(), timeout_seconds=index_timeout, stream_output=True)
                 
                 # Run BWA alignment
                 sam_path = bam_path.with_suffix(".sam")
@@ -467,9 +482,11 @@ def spike_variants(
     })
 
     final_picard_jar_path_for_tools: Optional[str] = None
+    addsnv_exe_path: Optional[str] = None
+    addindel_exe_path: Optional[str] = None
+    using_wrapper = False
+    
     try:
-        addsnv_exe_path = bb_utils.find_tool_path("addsnv.py")
-        addindel_exe_path = bb_utils.find_tool_path("addindel.py")
         samtools_exe_path = bb_utils.find_tool_path("samtools")
 
         picard_jar_cli_arg = command_params.get("picard_jar")
@@ -484,13 +501,6 @@ def spike_variants(
             if not p_path.is_file(): raise bb_utils.BaseBuddyFileError(f"BAMSURGEON_PICARD_JAR environment variable points to non-existent file: {picard_jar_env_var}")
             final_picard_jar_path_for_tools = str(p_path.resolve())
 
-        if not final_picard_jar_path_for_tools:
-            # BaseBuddy should ensure this is provided to avoid bamsurgeon failing cryptically.
-            raise bb_utils.BaseBuddyConfigError(
-                "Picard JAR path is required by BAMSurgeon tools (addsnv.py, addindel.py). "
-                "Please provide it via the '--picard-jar' option in 'command_params' (e.g. from CLI a --picard-jar option to spike) "
-                "or set the BAMSURGEON_PICARD_JAR environment variable."
-            )
 
     except bb_utils.BaseBuddyConfigError as e:
         logger.error(f"Tool configuration error for spiking: {e.details if hasattr(e, 'details') and e.details else str(e)}")
@@ -572,43 +582,88 @@ def spike_variants(
 
         try:
             if temp_snp_bed_file_path and temp_snp_bed_file_path.exists():
+                # Find the tool only when needed
+                if addsnv_exe_path is None:
+                    addsnv_exe_path = bb_utils.find_tool_path("addsnv.py")
+                    using_wrapper = addsnv_exe_path.endswith("wrapper.py")
+                    
+                    # Check Picard JAR requirement only for non-wrapper tools
+                    if not using_wrapper and not final_picard_jar_path_for_tools:
+                        raise bb_utils.BaseBuddyConfigError(
+                            "Picard JAR path is required by BAMSurgeon addsnv.py. "
+                            "Please provide it via the '--picard-jar' option or set the BAMSURGEON_PICARD_JAR environment variable."
+                        )
+                
                 bam_after_snps_path = run_output_dir / f"{output_prefix_for_bam}_{input_bam_stem}_TEMP_with_snps.bam"
                 intermediate_files_for_this_input_bam.append(bam_after_snps_path)
                 logger.info(f"Adding SNPs to {current_bam_to_process.name} -> {bam_after_snps_path.name}")
 
-                cmd_builder = bb_utils.Command("python").add_option(None, addsnv_exe_path)
-                cmd_builder.add_option("-v", str(temp_snp_bed_file_path))
-                cmd_builder.add_option("-f", str(current_bam_to_process))
-                cmd_builder.add_option("-r", str(ref_path_obj))
-                cmd_builder.add_option("-o", str(bam_after_snps_path))
-                cmd_builder.add_option("-m", str(cli_vaf))
-                cmd_builder.add_option("--seed", str(seed_for_tool))
-                cmd_builder.add_option("--tmpdir", str(run_output_dir / f"addsnv_tmp_{input_bam_stem}"))
-                cmd_builder.add_option("--picardjar", final_picard_jar_path_for_tools)
-                cmd_builder.add_option("--vcf", str(snp_log_vcf_path))
+                # Use the script directly if it's executable (wrapper), otherwise use python
+                if using_wrapper and os.access(addsnv_exe_path, os.X_OK):
+                    cmd_parts = [addsnv_exe_path]
+                else:
+                    cmd_parts = ["python", addsnv_exe_path]
+                
+                # Build command manually to avoid Command class issues
+                cmd_parts.extend([
+                    "-v", str(temp_snp_bed_file_path),
+                    "-f", str(current_bam_to_process),
+                    "-r", str(ref_path_obj),
+                    "-o", str(bam_after_snps_path)
+                ])
+                
+                if using_wrapper:
+                    # Wrapper uses different argument names
+                    cmd_parts.extend(["-p", str(cli_vaf), "-s", str(seed_for_tool)])
+                    # Add strand bias if provided
+                    strand_bias = command_params.get("strand_bias", 0.5)
+                    if strand_bias != 0.5:
+                        cmd_parts.extend(["--strand-bias", str(strand_bias)])
+                else:
+                    # Original BAMSurgeon addsnv.py arguments
+                    cmd_parts.extend([
+                        "-m", str(cli_vaf),
+                        "--seed", str(seed_for_tool),
+                        "--tmpdir", str(run_output_dir / f"addsnv_tmp_{input_bam_stem}"),
+                        "--picardjar", final_picard_jar_path_for_tools,
+                        "--vcf", str(snp_log_vcf_path)
+                    ])
 
-                bb_utils.run_external_cmd(cmd_builder.get_command_parts(), stream_output=True, cwd=run_output_dir)
+                bb_utils.run_external_cmd(cmd_parts, stream_output=True, cwd=run_output_dir)
                 current_bam_to_process = bam_after_snps_path
                 made_changes_to_this_bam = True
 
             if temp_indel_bed_file_path and temp_indel_bed_file_path.exists():
+                # Find the tool only when needed
+                if addindel_exe_path is None:
+                    addindel_exe_path = bb_utils.find_tool_path("addindel.py")
+                    
+                    # Check Picard JAR requirement for addindel
+                    if not final_picard_jar_path_for_tools:
+                        raise bb_utils.BaseBuddyConfigError(
+                            "Picard JAR path is required by BAMSurgeon addindel.py. "
+                            "Please provide it via the '--picard-jar' option or set the BAMSURGEON_PICARD_JAR environment variable."
+                        )
+                
                 name_suffix = "_TEMP_with_indels.bam" if not made_changes_to_this_bam else "_TEMP_with_snps_indels.bam"
                 bam_after_indels_path = run_output_dir / f"{output_prefix_for_bam}_{input_bam_stem}{name_suffix}"
                 intermediate_files_for_this_input_bam.append(bam_after_indels_path)
                 logger.info(f"Adding Indels to {current_bam_to_process.name} -> {bam_after_indels_path.name}")
 
-                cmd_builder = bb_utils.Command("python").add_option(None, addindel_exe_path)
-                cmd_builder.add_option("-v", str(temp_indel_bed_file_path))
-                cmd_builder.add_option("-f", str(current_bam_to_process))
-                cmd_builder.add_option("-r", str(ref_path_obj))
-                cmd_builder.add_option("-o", str(bam_after_indels_path))
-                cmd_builder.add_option("-m", str(cli_vaf)) # VAF for indels
-                cmd_builder.add_option("--seed", str(seed_for_tool))
-                cmd_builder.add_option("--tmpdir", str(run_output_dir / f"addindel_tmp_{input_bam_stem}"))
-                cmd_builder.add_option("--picardjar", final_picard_jar_path_for_tools)
-                cmd_builder.add_option("--vcf", str(indel_log_vcf_path))
+                # Build command for addindel
+                cmd_parts = ["python", addindel_exe_path,
+                    "-v", str(temp_indel_bed_file_path),
+                    "-f", str(current_bam_to_process),
+                    "-r", str(ref_path_obj),
+                    "-o", str(bam_after_indels_path),
+                    "-m", str(cli_vaf),
+                    "--seed", str(seed_for_tool),
+                    "--tmpdir", str(run_output_dir / f"addindel_tmp_{input_bam_stem}"),
+                    "--picardjar", final_picard_jar_path_for_tools,
+                    "--vcf", str(indel_log_vcf_path)
+                ]
 
-                bb_utils.run_external_cmd(cmd_builder.get_command_parts(), stream_output=True, cwd=run_output_dir)
+                bb_utils.run_external_cmd(cmd_parts, stream_output=True, cwd=run_output_dir)
                 current_bam_to_process = bam_after_indels_path
                 made_changes_to_this_bam = True
 
@@ -624,8 +679,9 @@ def spike_variants(
 
             final_sorted_bam_path = run_output_dir / f"{output_prefix_for_bam}_{input_bam_stem}_final_sorted.bam"
             logger.info(f"Sorting BAM: {current_bam_to_process.name} -> {final_sorted_bam_path.name}")
-            cmd_sort = bb_utils.Command("samtools").add_option(None, "sort").add_option("-o", str(final_sorted_bam_path)).add_option(None, str(current_bam_to_process))
-            bb_utils.run_external_cmd(cmd_sort.get_command_parts(), cwd=run_output_dir)
+            # Build samtools sort command manually
+            cmd_sort_parts = [samtools_exe_path, "sort", "-o", str(final_sorted_bam_path), str(current_bam_to_process)]
+            bb_utils.run_external_cmd(cmd_sort_parts, cwd=run_output_dir)
 
             bb_utils.check_bam_indexed(final_sorted_bam_path, samtools_exe_path, auto_index_if_missing=True)
             final_bam_obj = bb_utils.ensure_file_exists(final_sorted_bam_path, "Final sorted BAM")

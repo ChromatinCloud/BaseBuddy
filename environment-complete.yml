@@ -1,0 +1,59 @@
+name: basebuddy
+channels:
+  - conda-forge
+  - bioconda
+dependencies:
+  - python>=3.10,<3.12        # Ensure compatibility with PyPI wheels
+  - pip                       # Fallback installer for PyPI-only packages
+  
+  ## Python Core & GUI
+  - pysam                     # HTSlib bindings for BAM/CRAM I/O
+  - numpy                     # Numerical computing
+  - scipy                     # Scientific algorithms
+  - pandas                    # DataFrames
+  - tk                        # Tcl/Tk GUI toolkit (customtkinter will be pip-installed)
+
+  ## Alignment Tools
+  - bwa                       # BWA aligner
+  - samtools                  # SAM/BAM utilities
+  - minimap2                  # Versatile long/short-read aligner
+
+  ## Read Simulation Tools
+  - art                       # ART Illumina simulator
+  - nanosim                   # NanoSim read simulator
+  - wgsim                     # wgsim (BamSurgeon dependency)
+
+  ## Variant Manipulation
+  - bamsurgeon                # Add SNVs/indels to BAMs
+  - exonerate                 # Alignment helper for BamSurgeon
+  - velvet                    # De novo assembler for indel context
+  - picard                    # Java-based BAM toolkit (optional)
+  - openjdk                   # Java runtime for Picard
+
+  ## Germline Simulation
+  - perl                      # For simug scripting
+
+  ## NanoSim Dependencies
+  - last                      # LAST aligner for error modeling
+  - scikit-learn              # ML for NanoSim
+
+  ## Additional Python Packages
+  - biopython                 # Sequence processing
+  - matplotlib                # Plotting
+  - seaborn                   # Statistical plotting
+  - pybedtools                # BED file operations
+
+  ## System Utilities
+  - bcftools                  # VCF manipulation
+  - bedtools                  # Interval operations
+  - pigz                      # Parallel gzip (optional)
+
+  ## Development Tools (optional but recommended)
+  - ipykernel                 # Jupyter kernel support
+  - jupyter                   # Jupyter notebooks
+  - black                     # Code formatter
+  - pytest                    # Testing framework
+
+# Use pip for packages not available via Conda
+pip:
+  - customtkinter             # Modern Tkinter GUI library

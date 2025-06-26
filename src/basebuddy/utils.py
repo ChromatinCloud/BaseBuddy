@@ -64,6 +64,22 @@ class BaseBuddyChecksumError(BaseBuddyFileError):
 
 # --- External Tool Path Checking ( 그대로 유지 ) ---
 def find_tool_path(tool_name: str) -> str:
+    # First check if there's a wrapper script for this tool
+    wrapper_mappings = {
+        "addsnv.py": "addsnv_wrapper.py",
+        # Add more mappings here if we create more wrappers
+    }
+    
+    if tool_name in wrapper_mappings:
+        wrapper_name = wrapper_mappings[tool_name]
+        # Get the BaseBuddy project root directory
+        basebuddy_root = Path(__file__).parent.parent.parent
+        wrapper_path = basebuddy_root / "scripts" / wrapper_name
+        if wrapper_path.exists() and wrapper_path.is_file():
+            logger.debug(f"Using wrapper script for '{tool_name}' at '{wrapper_path}'.")
+            return str(wrapper_path)
+    
+    # Otherwise, use the standard PATH lookup
     tool_path = shutil.which(tool_name)
     if not tool_path:
         logger.error(f"External tool '{tool_name}' not found in PATH.")
@@ -588,7 +604,10 @@ class Command:
     def add_option(self, option: str, value: Any):
         """Adds an option with a value, e.g., `-o output.txt`."""
         if value is not None:
-            self.parts.extend([option, str(value)])
+            if option is not None:
+                self.parts.extend([option, str(value)])
+            else:
+                self.parts.append(str(value))
         return self # Allow chaining
 
     def add_flag(self, flag: str, condition: bool = True):

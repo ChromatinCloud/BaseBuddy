@@ -1,0 +1,45 @@
+name: basebuddy-arm
+channels:
+  - conda-forge
+  - bioconda
+dependencies:
+  - python>=3.10,<3.12
+  - pip
+
+  # Python Core & GUI
+  - pysam
+  - numpy
+  - scipy
+  - pandas
+  - tk                        # GUI toolkit base
+
+  # Alignment Tools (ARM64-compatible)
+  - bwa
+  - samtools
+  - minimap2
+  - bcftools
+  - bedtools
+
+  # Read Simulation (ARM64-compatible only)
+  - art                       # ART Illumina simulator
+
+  # Additional Python Packages
+  - biopython
+  - matplotlib
+  - seaborn
+  - scikit-learn             # For NanoSim
+  - ipykernel
+  - jupyter
+
+  # Java-based tools (platform-independent)
+  - picard
+  - openjdk
+
+  # Development tools
+  - black
+  - pytest
+
+# Use pip for Python-only packages
+pip:
+  - customtkinter
+  - typer                    # For CLI
